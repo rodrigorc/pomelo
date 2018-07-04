@@ -1,0 +1,7 @@
+[package]
+name = "pomelo"
+version = "0.1.0"
+authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
+
+[dependencies]
+pomelo-impl = { version = "=0.1.0", path="pomelo-impl"}
