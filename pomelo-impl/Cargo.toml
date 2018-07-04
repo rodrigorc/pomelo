@@ -1,0 +1,12 @@
+[package]
+name = "pomelo-impl"
+version = "0.1.0"
+authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "*"
+quote = "*"
+syn = { version="*", features= ["extra-traits"] }
