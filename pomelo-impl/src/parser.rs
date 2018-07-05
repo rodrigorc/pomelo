@@ -1,0 +1,2726 @@
+#![allow(dead_code)]
+
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::io;
+use std::fs;
+use std::path::Path;
+use std::cmp::{self, Ordering};
+
+use wrc::WRc;
+use decl::*;
+
+type RuleSet = BTreeSet<usize>;
+
+enum NewSymbolType {
+    Terminal,
+    NonTerminal,
+    MultiTerminal,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct Precedence(i32, Associativity);
+
+impl Precedence {
+    fn get_next(&self, p: Associativity) -> Precedence {
+        Precedence(self.0 + 1, p)
+    }
+}
+
+fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
+	match a.0.cmp(&b.0) {
+        Ordering::Equal => {
+            match a.1 {
+                Associativity::Left => Ordering::Less,
+                Associativity::Right => Ordering::Greater,
+                Associativity::None => Ordering::Equal,
+            }
+        }
+        o => o
+	}
+}
+
+#[derive(Debug)]
+struct Rule {
+    lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
+    lhs_start: bool,    //True if LHS is the start symbol
+    rhs: Vec<WeakSymbolAlias>,   //RHS symbols and aliases
+    code: Option<String>,//The code executed when this rule is reduced
+    prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
+    index: usize,         //An index number for this rule
+    can_reduce: bool,   //True if this rule is ever reduced
+}
+
+#[derive(Debug)]
+enum SymbolType {
+    Terminal,
+    NonTerminal {
+        rules: Vec<WRc<RefCell<Rule>>>, //List of rules, if a NonTerminal
+        first_set: RuleSet,             //First-set for all rules of this symbol
+        lambda: bool,                   //True if NonTerminal and can generate an empty string
+    },
+    MultiTerminal(Vec<WRc<RefCell<Symbol>>>), //constituent symbols if MultiTerminal
+}
+use self::SymbolType::*;
+
+#[derive(Debug)]
+struct Symbol {
+    name: String,               //Name of the symbol
+    index: usize,               //Index number for this symbol
+    typ: SymbolType,        //Either Terminal or NonTerminal
+    fallback: Option<WRc<RefCell<Symbol>>>, //Fallback token in case this token desn't parse
+    assoc: Option<Precedence>,  //Precedence
+    use_cnt: i32,               //Number of times used
+    data_type: Option<String>,  //Data type held by this object, only if NonTerminal
+    dt_num: Option<usize>,      //The data type number. The .yy%d element of stack is the correct data type for this object
+}
+
+impl Symbol {
+    fn is_lambda(&self) -> bool {
+        match self.typ {
+            NonTerminal{lambda, ..} => lambda,
+            _ => false
+        }
+    }
+}
+
+fn symbol_cmp(a: &Rc<RefCell<Symbol>>, b: &Rc<RefCell<Symbol>>) -> Ordering {
+    fn symbol_ord(s: &SymbolType) -> i32 {
+        match s {
+            Terminal => 0,
+            NonTerminal{..} => 1,
+            MultiTerminal(_) => 2,
+        }
+    }
+    let a = symbol_ord(&a.borrow().typ);
+    let b = symbol_ord(&b.borrow().typ);
+    a.cmp(&b)
+}
+
+/* A configuration is a production rule of the grammar together with
+* a mark (dot) showing how much of that rule has been processed so far.
+* Configurations also contain a follow-set which is a list of terminal
+* symbols which are allowed to immediately follow the end of the rule.
+* Every configuration is recorded as an instance of the following: */
+#[derive(Debug)]
+enum CfgStatus {
+    Complete,
+    Incomplete
+}
+
+#[derive(Debug)]
+struct Config {
+    rule: WRc<RefCell<Rule>>,   //The rule upon which the configuration is based
+    dot: usize,           //The parse point
+    fws: RuleSet,       //Follow-set for this configuration only
+    fplp: Vec<WRc<RefCell<Config>>>,  //Follow-set forward propagation links
+    bplp: Vec<WRc<RefCell<Config>>>,  //Follow-set backwards propagation links
+    //stp: Option<WRc<RefCell<State>>>,   //State which contains this (TODO is really needed)
+    status: CfgStatus,  //Used during followset and shift computations
+}
+
+fn config_cmp_key(a: &Rc<RefCell<Config>>, index: usize, dot: usize) -> Ordering {
+    let adot = a.borrow().dot;
+    let aindex = {
+        let a2 = a.borrow().rule.unwrap();
+        let ai = a2.borrow().index;
+        ai
+    };
+    (aindex, adot).cmp(&(index, dot))
+}
+
+fn config_cmp(a: &Rc<RefCell<Config>>, b: &Rc<RefCell<Config>>) -> Ordering {
+    let bdot = b.borrow().dot;
+    let bindex = {
+        let b2 = b.borrow().rule.unwrap();
+        let bi = b2.borrow().index;
+        bi
+    };
+    config_cmp_key(a, bindex, bdot)
+}
+
+type ConfigList = Vec<Rc<RefCell<Config>>>;
+
+#[derive(Debug)]
+enum EAction {
+    Shift(WRc<RefCell<State>>),
+    Accept,
+    Reduce(WRc<RefCell<Rule>>),
+    Error,
+    SSConflict(WRc<RefCell<State>>),    //A shift/shift conflict
+    SRConflict(WRc<RefCell<Rule>>),     //Was a reduce, but part of a conflict
+    RRConflict(WRc<RefCell<Rule>>),     //Was a reduce, but part of a conflict
+    SHResolved(WRc<RefCell<State>>),    //Was a shift. Associativity resolved conflict
+    RDResolved(WRc<RefCell<Rule>>),     //Was reduce. Associativity resolved conflict
+    NotUsed                             //Deleted by compression
+}
+
+fn eaction_cmp(a: &EAction, b: &EAction) -> Ordering {
+    use self::EAction::*;
+
+    match a {
+        Shift(ref sa) => match b {
+            Shift(ref sb) => {
+                let sa = sa.unwrap();
+                let sb = sb.unwrap();
+                let rc = sa.borrow().state_num.cmp(&sb.borrow().state_num);
+                rc
+            }
+            _ => Ordering::Less,
+        }
+        Accept => match b {
+            Shift(_) => Ordering::Greater,
+            Accept => Ordering::Equal,
+            _ => Ordering::Less,
+        }
+        Reduce(ref ra) => match b {
+            Shift(_) => Ordering::Greater,
+            Accept => Ordering::Greater,
+            Reduce(ref rb) => {
+                let ra = ra.unwrap();
+                let rb = rb.unwrap();
+                let rc = ra.borrow().index.cmp(&rb.borrow().index);
+                rc
+            }
+            _ => Ordering::Less,
+        }
+        _ => {
+            Ordering::Equal
+        }
+    }
+}
+
+//Every shift or reduce operation is stored as one of the following
+#[derive(Debug)]
+struct Action {
+  sp: WRc<RefCell<Symbol>>,           //The look-ahead symbol
+  x: EAction,
+}
+
+fn action_cmp(a: &RefCell<Action>, b: &RefCell<Action>) -> Ordering {
+    let asp = a.borrow().sp.unwrap();
+    let bsp = b.borrow().sp.unwrap();
+    let rc = asp.borrow().index.cmp(&bsp.borrow().index);
+    match rc {
+        Ordering::Equal => match eaction_cmp(&a.borrow().x, &b.borrow().x) {
+            Ordering::Equal => {
+                (&*a.borrow() as *const Action).cmp(&(&*b.borrow() as *const Action))
+            }
+            rc => rc,
+        }
+        rc => rc,
+    }
+}
+
+#[derive(Debug)]
+struct State {
+    cfp: Vec<Rc<RefCell<Config>>>, //All configurations in this set
+    bp: Vec<WRc<RefCell<Config>>>, //The basis configuration for this state
+    state_num: usize,     //Sequential number for this state
+    ap: Vec<RefCell<Action>>,    //Array of actions for this state
+    n_tkn_act: i32,     //number of actions on terminals and non-terminals
+    n_nt_act: i32,
+    i_tkn_ofst: Option<i32>,    //yy_action[] offset for terminals and non-terminals
+    i_nt_ofst: Option<i32>,
+    i_dflt: usize,        //Default action
+}
+
+#[derive(Debug)]
+pub struct Lemon {
+    states: Vec<Rc<RefCell<State>>>,     //Table of states sorted by state number
+    rules: Vec<Rc<RefCell<Rule>>>,        //List of all rules
+    nsymbol: usize,
+    nterminal: usize,
+    symbols: Vec<Rc<RefCell<Symbol>>>,   //Sorted array of symbols
+    err_sym: WRc<RefCell<Symbol>>,      //The error symbol
+    wildcard: Option<WRc<RefCell<Symbol>>>,     //The symbol that matches anything
+    arg: Option<String>,        //Declaration of the 3rd argument to parser
+    nconflict: i32,             //Number of parsing conflicts
+    has_fallback: bool,         //True if any %fallback is seen in the grammar
+    var_type: Option<String>,
+    start: Option<String>,
+}
+
+
+type SymbolAlias = (Rc<RefCell<Symbol>>, Option<String>);
+type WeakSymbolAlias = (WRc<RefCell<Symbol>>, Option<String>);
+
+enum ParserState {
+    WaitingForDeclOrRule,
+    WaitingForDeclKeyword,
+    WaitingForDeclArg(Box<Fn(&mut Lemon, String)>),
+    WaitingForPrecedenceSymbol,
+    WaitingForArrow(Rc<RefCell<Symbol>>),
+    InRhs(Rc<RefCell<Symbol>>, Vec<SymbolAlias>),
+    RhsAlias1(Rc<RefCell<Symbol>>, Vec<SymbolAlias>),
+    RhsAlias2(Rc<RefCell<Symbol>>, Vec<SymbolAlias>),
+    PrecedenceMark1,
+    PrecedenceMark2,
+    WaitingForDatatypeSymbol,
+    WaitingForFallbackId(Option<Rc<RefCell<Symbol>>>),
+    WaitingForWildcardId,
+    WaitingForClassId,
+    WaitingForClassToken(Rc<RefCell<Symbol>>),
+}
+
+struct ParserData {
+    declassoc: Precedence,
+    rules: Vec<Rc<RefCell<Rule>>>,
+}
+
+#[derive(Debug)]
+struct AxSet {
+    stp: Rc<RefCell<State>>,    // A pointer to a state
+    is_tkn: bool,               // true for tokens, false for non-terminals
+    n_action: i32,              // Number of actions
+}
+
+/*
+** The state of the yy_action table under construction is an instance of
+** the following structure.
+**
+** The yy_action table maps the pair (state_number, lookahead) into an
+** action_number.  The table is an array of integers pairs.  The state_number
+** determines an initial offset into the yy_action array.  The lookahead
+** value is then added to this initial offset to get an index X into the
+** yy_action array. If the aAction[X].lookahead equals the value of the
+** of the lookahead input, then the value of the action_number output is
+** aAction[X].action.  If the lookaheads do not match then the
+** default action for the state_number is returned.
+**
+** All actions associated with a single state_number are first entered
+** into aLookahead[] using multiple calls to acttab_action().  Then the
+** actions for that single state_number are placed into the aAction[]
+** array with a single call to acttab_insert().  The acttab_insert() call
+** also resets the aLookahead[] array in preparation for the next
+** state number.
+*/
+#[derive(Debug, Copy, Clone)]
+struct LookaheadAction {
+    lookahead: usize,     // Value of the lookahead token
+    action: usize,        // Action to take on the given lookahead
+}
+
+#[derive(Debug)]
+struct ActionSet {
+    a_lookahead: Vec<LookaheadAction>,  // A single new transaction set
+}
+
+impl ActionSet {
+    fn new() -> ActionSet {
+        ActionSet {
+            a_lookahead: Vec::new(),
+        }
+    }
+    /* Add a new action to the current transaction set.
+     **
+     ** This routine is called once for each lookahead for a particular
+     ** state.
+     */
+    fn add_action(&mut self, lookahead: usize, action: usize) {
+        self.a_lookahead.push(LookaheadAction { lookahead, action });
+    }
+}
+
+#[derive(Debug)]
+struct ActTab {
+    a_action: Vec<Option<LookaheadAction>>,     // The yy_action[] table under construction
+}
+
+impl ActTab {
+    fn new() -> ActTab {
+        ActTab {
+            a_action: Vec::new(),
+        }
+    }
+    /*
+     ** Add the transaction set built up with prior calls to add_action()
+     ** into the current action table.  Then reset the transaction set back
+     ** to an empty set in preparation for a new round of add_action() calls.
+     **
+     ** Return the offset into the action table of the new transaction.
+     */
+    fn insert_action_set(&mut self, at2: &ActionSet) -> i32 {
+        assert!(!at2.a_lookahead.is_empty());
+
+        //at2.a_lookahead is sorted by lookahead
+        let min_lookahead = at2.a_lookahead.first().unwrap().lookahead;
+        let min_action = at2.a_lookahead.first().unwrap().action;
+        let max_lookahead = at2.a_lookahead.last().unwrap().lookahead;
+
+        /* Scan the existing action table looking for an offset that is a
+         ** duplicate of the current transaction set.  Fall out of the loop
+         ** if and when the duplicate is found.
+         **
+         ** i is the index in self.a_action[] where min_lookahead is inserted.
+         */
+        let mut found = None;
+   'la: for (i, a) in self.a_action.iter().enumerate().rev() {
+            let a = match a {
+                None => continue,
+                Some(a) => a,
+            };
+            /* All lookaheads and actions in the a_lookahead[] transaction
+             ** must match against the candidate a_action[i] entry. */
+            if a.lookahead != min_lookahead { continue }
+            if a.action != min_action { continue }
+
+            for jla in &at2.a_lookahead {
+                let k = jla.lookahead as i32 - min_lookahead as i32 + i as i32;
+                if k < 0 || k as usize >= self.a_action.len() { continue 'la }
+                match self.a_action[k as usize] {
+                    Some(ka) => {
+                        if jla.lookahead != ka.lookahead { continue 'la }
+                        if jla.action != ka.action { continue 'la }
+                    }
+                    None => continue 'la,
+                }
+            }
+
+            /* No possible lookahead value that is not in the aLookahead[]
+             ** transaction is allowed to match aAction[i] */
+            let mut n = 0;
+            for (j, ja) in self.a_action.iter().enumerate() {
+                let ja = match ja {
+                    None => continue,
+                    Some(ja) => ja,
+                };
+                if ja.lookahead as i32 == (j as i32 + min_lookahead as i32 - i as i32) {
+                    n += 1;
+                }
+            }
+            if n == at2.a_lookahead.len() {
+                found = Some(i);
+                break;  /* An exact match is found at offset i */
+            }
+        }
+       /* If no existing offsets exactly match the current transaction, find an
+        ** an empty offset in the aAction[] table in which we can add the
+        ** aLookahead[] transaction.
+        */
+        let i = match found {
+            None => {
+                /* Look for holes in the aAction[] table that fit the current
+                 ** aLookahead[] transaction.  Leave i set to the offset of the hole.
+                 ** If no holes are found, i is left at self.n_action, which means the
+                 ** transaction will be appended. */
+                let mut r = None; //self.a_action.len();
+           'ia: for i in 0 .. self.a_action.len() + max_lookahead {
+                    for jla in &at2.a_lookahead {
+                        let k = jla.lookahead - min_lookahead + i;
+                        match self.a_action.get(k) {
+                            Some(Some(_)) => { continue 'ia }
+                            _ => { },
+                        }
+                    }
+                    for (j, ja) in self.a_action.iter().enumerate() {
+                        let ja = match ja {
+                            None => { continue },
+                            Some(ja) => ja.lookahead as i32,
+                        };
+                        if ja == (j as i32 + min_lookahead as i32 - i as i32) { continue 'ia }
+                    }
+                    r = Some(i);
+                    //println!("hole at {}", i);
+                    break
+                }
+                r.unwrap()
+            }
+            Some(i) => {
+                //println!("matched at {}", i);
+                i
+            }
+        };
+
+        let res = i as i32 - min_lookahead as i32;
+
+        /* Insert transaction set at index i. */
+        for jla in &at2.a_lookahead {
+            let k = (jla.lookahead as i32 + res) as usize;
+            if k >= self.a_action.len() {
+                self.a_action.resize(k + 1, None);
+            }
+            self.a_action[k] = Some(*jla);
+        }
+
+        /*
+        print!("LK:");
+        for jla in &at2.a_lookahead {
+            print!(" {:>2}/{:<2}", jla.action, jla.lookahead);
+        }
+        print!(" -> {}", res);
+        println!();
+
+        print!("AC:");
+        for (j, ja) in self.a_action.iter().enumerate() {
+            match ja {
+                None => {
+                    print!(" {}:-----", j);
+                }
+                Some(ref ja) => {
+                    print!(" {}:{:>2}/{:<2}", j, ja.action, ja.lookahead);
+                }
+            }
+        }
+        println!();
+        println!();
+        */
+
+        /* Return the offset that is added to the lookahead in order to get the
+         ** index into yy_action of the action */
+        res
+    }
+}
+
+fn minimum_size_type(signed: bool, max: usize) -> &'static str {
+    if signed {
+        if max < 0x80 {
+            "i8"
+        } else if max < 0x8000 {
+            "i16"
+        } else {
+            "i32"
+        }
+    } else {
+        if max < 0x100 {
+            "u8"
+        } else if max < 0x10000 {
+            "u16"
+        } else {
+            "u32"
+        }
+    }
+}
+
+fn error<T>(msg: &'static str) -> io::Result<T> {
+    Err(io::Error::new(io::ErrorKind::InvalidInput, msg))
+}
+
+fn is_uppercase(id: &Ident) -> bool {
+    id.to_string().chars().next().unwrap().is_ascii_uppercase()
+}
+
+fn is_lowercase(id: &Ident) -> bool {
+    id.to_string().chars().next().unwrap().is_ascii_lowercase()
+}
+
+impl Lemon {
+    pub fn new_from_decls(decls: &[Decl]) -> io::Result<Lemon> {
+        let mut symbols = Vec::new();
+
+        Lemon::symbol_new(&mut symbols, "$", NewSymbolType::Terminal);
+        let err_sym = Lemon::symbol_new(&mut symbols, "error", NewSymbolType::NonTerminal);
+
+        let mut lem = Lemon {
+            states: Vec::new(),
+            rules: Vec::new(),
+            nsymbol: 0,
+            nterminal: 0,
+            symbols,
+            err_sym,
+            wildcard: None,
+            arg: None,
+            nconflict: 0,
+            has_fallback: false,
+
+            var_type: None,
+            start: None,
+        };
+
+        let mut pdata = ParserData {
+            declassoc: Precedence(0, Associativity::Left),
+            rules: Vec::new(),
+        };
+
+        for decl in decls {
+            lem.parse_one_decl(&mut pdata, decl)?;
+        }
+        lem.rules = pdata.rules;
+
+        Lemon::symbol_new(&mut lem.symbols, "{default}", NewSymbolType::NonTerminal);
+        Ok(lem)
+    }
+    pub fn build(&mut self) -> io::Result<()> {
+        println!("--> prepare");
+        self.prepare();
+        println!("--> find rule prec");
+        self.find_rule_precedences();
+        println!("--> find first sets");
+        self.find_first_sets();
+        println!("--> find states");
+        self.find_states()?;
+        println!("--> find links");
+        self.find_links();
+        println!("--> find follow sets");
+        self.find_follow_sets();
+        println!("--> find actions");
+        self.find_actions()?;
+
+        println!("--> compress ");
+        self.compress_tables();
+        println!("--> resort ");
+        self.resort_states();
+        //self.report_output();
+
+        println!("--> generate ");
+        self.generate_source()?;
+
+        //println!("{:?}", self);
+        //println!("nsymbol={}, nterminal={}", self.nsymbol, self.nterminal);
+        Ok(())
+    }
+
+    pub fn prepare(&mut self) {
+        //keep $ at 0
+        self.symbols[1..].sort_by(symbol_cmp);
+
+        for (i,s) in self.symbols.iter().enumerate() {
+            s.borrow_mut().index = i;
+            match s.borrow().typ {
+                Terminal => {
+                    self.nterminal = i;
+                }
+                NonTerminal{..} => {
+                    self.nsymbol = i;
+                }
+                MultiTerminal(_) => {
+                }
+            }
+        }
+        self.nterminal += 1;
+    }
+
+    /* Find a precedence symbol of every rule in the grammar.
+     **
+     ** Those rules which have a precedence symbol coded in the input
+     ** grammar using the "[symbol]" construct will already have the
+     ** rp->precsym field filled.  Other rules take as their precedence
+     ** symbol the first RHS symbol with a defined precedence.  If there
+     ** are not RHS symbols with a defined precedence, the precedence
+     ** symbol field is left blank.
+     */
+    fn find_rule_precedences(&mut self) {
+        for rp in &self.rules {
+            let mut rp = rp.borrow_mut();
+            if rp.prec_sym.is_some() {
+                continue;
+            }
+
+            let mut prec_sym = None;
+       'ps: for (sp,_) in rp.rhs.iter() {
+                let sp = sp.unwrap();
+                let b = sp.borrow();
+                match b.typ {
+                    MultiTerminal(ref sub_sym) => {
+                        for msp in sub_sym {
+                            let msp = msp.unwrap();
+                            if msp.borrow().assoc.is_some() {
+                                prec_sym = Some(sp.clone());
+                                break 'ps;
+                            }
+                        }
+                    }
+                    _ if b.assoc.is_some() => {
+                        prec_sym = Some(sp.clone());
+                        break 'ps;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(ps) = prec_sym {
+                rp.prec_sym = Some(ps.into());
+            }
+        }
+    }
+
+    /* Find all nonterminals which will generate the empty string.
+     ** Then go back and compute the first sets of every nonterminal.
+     ** The first set is the set of all terminal symbols which can begin
+     ** a string generated by that nonterminal.
+     */
+    fn find_first_sets(&mut self) {
+        loop {
+            let mut progress = false;
+            for rp in &self.rules {
+                let rp = rp.borrow();
+                let lhs = rp.lhs.unwrap();
+                if lhs.borrow().is_lambda() { continue }
+
+                let mut all_lambda = true;
+                for (sp, _) in &rp.rhs {
+                    let sp = sp.unwrap();
+                    let sp = sp.borrow();
+                    if !sp.is_lambda() {
+                        all_lambda = false;
+                        break;
+                    }
+                }
+                if all_lambda {
+                    if let NonTerminal{ ref mut lambda, ..} = lhs.borrow_mut().typ {
+                        *lambda = true;
+                        progress = true;
+                    } else {
+                        assert!(false); //Only NonTerminals have lambda
+                    }
+                }
+            }
+            if !progress { break }
+        }
+        //Now compute all first sets
+        loop {
+            let mut progress = false;
+
+            for rp in &self.rules {
+                let rp = rp.borrow();
+                let s1 = rp.lhs.unwrap();
+                for (s2, _) in &rp.rhs {
+                    let s2 = s2.unwrap();
+
+                    //First check if s1 and s2 are the same, or else s1.borrow_mut() will panic
+                    if Rc::ptr_eq(&s1, &s2) {
+                        if !s1.borrow().is_lambda() { break }
+                        continue;
+                    }
+
+                    let b2 = s2.borrow();
+                    if let NonTerminal{ first_set: ref mut s1_first_set, .. } = s1.borrow_mut().typ {
+                        match b2.typ {
+                            Terminal => {
+                                progress |= s1_first_set.insert(b2.index);
+                                break;
+                            }
+                            MultiTerminal(ref sub_sym) => {
+                                for ss in sub_sym {
+                                    let ss = ss.unwrap();
+                                    progress |= s1_first_set.insert(ss.borrow().index);
+                                }
+                                break;
+                            }
+                            NonTerminal{ first_set: ref s2_first_set, lambda: b2_lambda, .. } => {
+                                let n1 = s1_first_set.len();
+                                s1_first_set.append(&mut s2_first_set.clone());
+                                progress |= s1_first_set.len() > n1;
+                                if !b2_lambda { break }
+                            }
+                        }
+                    }
+                }
+            }
+            if !progress { break }
+        }
+    }
+
+    /* Compute all LR(0) states for the grammar.  Links
+     ** are added to between some states so that the LR(1) follow sets
+     ** can be computed later.
+     */
+    fn find_states(&mut self) -> io::Result<()> {
+        /* Find the start symbol */
+        let sp = match self.start {
+            None => {
+                let r = self.rules.first().unwrap();
+                let b = r.borrow();
+                b.lhs.unwrap();
+
+                self.rules.first().unwrap().borrow().lhs.unwrap()
+            }
+            Some(ref s) => {
+                match self.symbol_find(s) {
+                    Some(x) => x,
+                    None => return error("start with unknown symbol"),
+                }
+            }
+        };
+
+        /* Make sure the start symbol doesn't occur on the right-hand side of
+         ** any rule.  Report an error if it does.  (YACC would generate a new
+         ** start symbol in this case.) */
+        for rp in &self.rules {
+            let rp = rp.borrow_mut();
+            for (r,_) in &rp.rhs {
+                let r = r.unwrap();
+                if Rc::ptr_eq(&sp, &r) {
+                    return error("start symbol on the RHS of a rule");
+                }
+                let r = r.borrow();
+                if let MultiTerminal(ref sub_sym) = r.typ {
+                    for r2 in sub_sym {
+                        let r2 = r2.unwrap();
+                        if Rc::ptr_eq(&sp, &r2) {
+                            return error("start symbol on the RHS of a rule");
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut basis = ConfigList::new();
+
+        /* The basis configuration set for the first state
+         ** is all rules which have the start symbol as their
+         ** left-hand side */
+        if let NonTerminal{ref rules, ..} = sp.borrow().typ {
+            for rp in rules {
+                let rp = rp.unwrap();
+                rp.borrow_mut().lhs_start = true;
+
+                let cfg = Lemon::add_config(&mut basis, rp, 0);
+                cfg.borrow_mut().fws.insert(0);
+            }
+        }
+        self.get_state(basis.clone(), basis)?;
+
+        Ok(())
+    }
+
+    /* Compute the first state.  All other states will be
+     ** computed automatically during the computation of the first one.
+     ** The returned pointer to the first state is not used. */
+    fn get_state(&mut self, mut bp: ConfigList, cur: ConfigList) -> io::Result<Rc<RefCell<State>>> {
+        bp.sort_by(config_cmp);
+        /* Get a state with the same basis */
+        match self.state_find(&bp) {
+            Some(stp) => {
+                /* A state with the same basis already exists!  Copy all the follow-set
+                 ** propagation links from the state under construction into the
+                 ** preexisting state, then return a pointer to the preexisting state */
+                let bstp = stp.borrow();
+                for (x, y) in bp.into_iter().zip(&bstp.bp) {
+                    let y = y.unwrap();
+                    let mut y = y.borrow_mut();
+                    y.bplp.extend(x.borrow_mut().bplp.iter().map(|x| x.clone()));
+                }
+                Ok(stp.clone())
+            }
+            None => {
+                /* This really is a new state. Construct all the details */
+                let mut cfp = self.configlist_closure(cur)?;
+                cfp.sort_by(config_cmp);
+                let stp = Rc::new(RefCell::new(State {
+                    cfp: cfp,
+                    bp: bp.iter().map(WRc::from).collect(),
+                    state_num: self.states.len(),
+                    ap: Vec::new(),
+                    n_tkn_act: 0,
+                    n_nt_act: 0,
+                    i_tkn_ofst: None,
+                    i_nt_ofst: None,
+                    i_dflt: 0,
+                }));
+                self.states.push(stp.clone());
+                self.build_shifts(&stp)?;
+                Ok(stp)
+            }
+        }
+    }
+    /* Construct all successor states to the given state.  A "successor"
+     ** state is any state which can be reached by a shift action.
+     */
+    fn build_shifts(&mut self, state: &Rc<RefCell<State>>) -> io::Result<()> {
+        /* Each configuration becomes complete after it contibutes to a successor
+         ** state.  Initially, all configurations are incomplete */
+
+        for cfp in &state.borrow().cfp {
+            cfp.borrow_mut().status = CfgStatus::Incomplete;
+        }
+        let mut aps = Vec::new();
+        /* Loop through all configurations of the state "stp" */
+        for (icfp, cfp) in state.borrow().cfp.iter().enumerate() {
+            let cfp = cfp.borrow();
+            if let CfgStatus::Complete = cfp.status { continue }/* Already used by inner loop */
+            let rule = cfp.rule.unwrap();
+            if cfp.dot >= rule.borrow().rhs.len() { continue }  /* Can't shift this config */
+            let (ref sp, _) = rule.borrow().rhs[cfp.dot];       /* Symbol after the dot */
+            let sp = sp.unwrap();
+            let mut basis = ConfigList::new();
+            drop(cfp);
+
+            /* For every configuration in the state "stp" which has the symbol "sp"
+             ** following its dot, add the same configuration to the basis set under
+             ** construction but with the dot shifted one symbol to the right. */
+            for bcfp_ in &state.borrow().cfp[icfp..] {
+                let bcfp = bcfp_.borrow();
+                if let CfgStatus::Complete = bcfp.status { continue }   /* Already used */
+                let brule = bcfp.rule.unwrap();
+                if bcfp.dot >= brule.borrow().rhs.len() { continue }    /* Can't shift this one */
+                let (ref bsp, _) = brule.borrow().rhs[bcfp.dot];        /* Get symbol after dot */
+                let bsp = bsp.unwrap();
+                if !Rc::ptr_eq(&bsp, &sp) { continue }                     /* Must be same as for "cfp" */
+                let newcfg = Lemon::add_config(&mut basis, brule.clone(), bcfp.dot + 1);
+                drop(bcfp);
+
+                bcfp_.borrow_mut().status = CfgStatus::Complete;                      /* Mark this config as used */
+                newcfg.borrow_mut().bplp.push(bcfp_.into());
+            }
+
+            /* Get a pointer to the state described by the basis configuration set
+             ** constructed in the preceding loop */
+            let newstp = self.get_state(basis.clone(), basis)?;
+
+            /* The state "newstp" is reached from the state "stp" by a shift action
+             ** on the symbol "sp" */
+            let bsp = sp.borrow();
+            match bsp.typ {
+                MultiTerminal(ref sub_sym) => {
+                    for ss in sub_sym {
+                        let x = EAction::Shift((&newstp).into());
+                        aps.push(RefCell::new(Action {
+                            sp: ss.clone(),
+                            x
+                        }));
+                    }
+                }
+                _ => {
+                    let x = EAction::Shift((&newstp).into());
+                    aps.push(RefCell::new(Action {
+                        sp: (&sp).into(),
+                        x
+                    }));
+                }
+            }
+        }
+        state.borrow_mut().ap.extend(aps);
+
+        Ok(())
+    }
+
+    /** Construct the propagation links */
+    fn find_links(&mut self) {
+        /* Housekeeping detail:
+         ** Add to every propagate link a pointer back to the state to
+         ** which the link is attached. */
+        //for stp in &self.states {
+        //    for cfp in &stp.borrow().cfp {
+        //        cfp.borrow_mut().stp = Some(stp.into());
+        //    }
+        //}
+
+        /* Convert all backlinks into forward links.  Only the forward
+         ** links are used in the follow-set computation. */
+        for stp in &self.states {
+            for cfp in &stp.borrow().cfp {
+                for plp in &cfp.borrow().bplp {
+                    let plp = plp.unwrap();
+                    plp.borrow_mut().fplp.push(cfp.into());
+                }
+            }
+        }
+    }
+
+    /* Compute all followsets.
+     **
+     ** A followset is the set of all symbols which can come immediately
+     ** after a configuration.
+     */
+    fn find_follow_sets(&mut self) {
+        for stp in &self.states {
+            for cfp in &stp.borrow().cfp {
+                cfp.borrow_mut().status = CfgStatus::Incomplete;
+            }
+        }
+
+        let mut progress = true;
+        while progress {
+            progress = false;
+            for stp in &self.states {
+                for cfp in &stp.borrow().cfp {
+                    let mut cfp = cfp.borrow_mut();
+                    match cfp.status {
+                        CfgStatus::Complete => (),
+                        CfgStatus::Incomplete => {
+                            for plp in &cfp.fplp {
+                                let mut fws = cfp.fws.clone();
+
+                                let plp = plp.unwrap();
+                                let mut plp = plp.borrow_mut();
+                                let n = plp.fws.len();
+                                plp.fws.append(&mut fws);
+                                if plp.fws.len() > n {
+                                    plp.status = CfgStatus::Incomplete;
+                                    progress = true;
+                                }
+                            }
+                            cfp.status = CfgStatus::Complete;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Compute the reduce actions, and resolve conflicts.
+    */
+    fn find_actions(&mut self) -> io::Result<()> {
+        /* Add all of the reduce actions
+         ** A reduce action is added for each element of the followset of
+         ** a configuration which has its dot at the extreme right.
+         */
+        for stp in &self.states {
+            let mut aps = Vec::new();
+            let mut stp = stp.borrow_mut();
+            for cfp in &stp.cfp {
+                let mut cfp = cfp.borrow_mut();
+                let rule = cfp.rule.unwrap();
+                if cfp.dot == rule.borrow().rhs.len() { /* Is dot at extreme right? */
+                    for j in 0 .. self.nterminal {
+                        if cfp.fws.contains(&j) {
+                            /* Add a reduce action to the state "stp" which will reduce by the
+                             ** rule "cfp->rp" if the lookahead symbol is "lemp->symbols[j]" */
+                            let x = EAction::Reduce((&rule).into());
+                            aps.push(RefCell::new(Action {
+                                sp: (&self.symbols[j]).into(),
+                                x
+                            }));
+                        }
+                    }
+                }
+            }
+            stp.ap.extend(aps);
+        }
+
+        /* Add the accepting token */
+        let sp = match self.start {
+            Some(ref start) => self.symbol_find(&start).unwrap(),
+            None => self.rules.first().unwrap().borrow().lhs.unwrap(),
+        };
+
+        /* Add to the first state (which is always the starting state of the
+         ** finite state machine) an action to ACCEPT if the lookahead is the
+         ** start nonterminal.  */
+        self.states.first().unwrap().borrow_mut().ap.push(RefCell::new(Action {
+            sp: sp.into(),
+            x: EAction::Accept,
+        }));
+
+        /* Resolve conflicts */
+        for stp in &self.states {
+            stp.borrow_mut().ap.sort_by(action_cmp);
+            let stp = stp.borrow();
+            let len = stp.ap.len();
+            for i in 0 .. len {
+                let ref ap = stp.ap[i];
+                for j in i + 1 .. len {
+                    let ref nap = stp.ap[j];
+                    if Rc::ptr_eq(&ap.borrow().sp.unwrap(), &nap.borrow().sp.unwrap()) {
+                        /* The two actions "ap" and "nap" have the same lookahead.
+                         ** Figure out which one should be used */
+                        self.nconflict += if Lemon::resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut()) { 1 } else { 0 };
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+
+        /* Report an error for each rule that can never be reduced. */
+        for stp in &self.states {
+            for a in &stp.borrow().ap {
+                let a = a.borrow();
+                if let EAction::Reduce(ref x) = a.x {
+                    let x = x.unwrap();
+                    x.borrow_mut().can_reduce = true;
+                }
+            }
+        }
+        for rp in &self.rules {
+            if !rp.borrow().can_reduce {
+                return error("This rule cannot be reduced");
+            }
+        }
+        Ok(())
+    }
+
+    /* Resolve a conflict between the two given actions.  If the
+     ** conflict can't be resolved, return non-zero.
+     **
+     ** NO LONGER TRUE:
+     **   To resolve a conflict, first look to see if either action
+     **   is on an error rule.  In that case, take the action which
+     **   is not associated with the error rule.  If neither or both
+     **   actions are associated with an error rule, then try to
+     **   use precedence to resolve the conflict.
+     **
+     ** If either action is a SHIFT, then it must be apx.  This
+     ** function won't work if apx->type==REDUCE and apy->type==SHIFT.
+     */
+    fn resolve_conflict(apx: &mut Action, apy: &mut Action) -> bool {
+        use self::EAction::*;
+        let (err, ax, ay) = match (&mut apx.x, &mut apy.x) {
+            (Shift(x), Shift(y)) => {
+                (true, Shift(x.clone()), SSConflict(y.clone()))
+            }
+            /* Use operator associativity to break tie */
+            (Shift(x), Reduce(y)) => {
+                let spx = apx.sp.unwrap();
+                let ry = y.unwrap();
+                let ref spy = ry.borrow().prec_sym;
+                let precx = spx.borrow().assoc;
+                let precy = Lemon::get_precedence(&spy);
+
+                match (precx, precy) {
+                    (Some(px), Some(py)) => {
+                        match precedence_cmp(&px, &py) {
+                            Ordering::Less => (false, SHResolved(x.clone()), Reduce(y.clone())),
+                            Ordering::Equal => (false, Error, Reduce(y.clone())),
+                            Ordering::Greater => (false, Shift(x.clone()), RDResolved(y.clone())),
+                        }
+                    }
+                    _ => (true, Shift(x.clone()), SRConflict(y.clone()))
+                }
+            }
+            (Reduce(x), Reduce(y)) => {
+                let rx = x.unwrap();
+                let ry = y.unwrap();
+                let ref spx = rx.borrow().prec_sym;
+                let ref spy = ry.borrow().prec_sym;
+                let precx = Lemon::get_precedence(&spx);
+                let precy = Lemon::get_precedence(&spy);
+
+                match (precx, precy) {
+                    (Some(px), Some(py)) => {
+                        match precedence_cmp(&px, &py) {
+                            Ordering::Less => (false, RDResolved(x.clone()), Reduce(y.clone())),
+                            Ordering::Equal => (true, Reduce(x.clone()), RRConflict(y.clone())),
+                            Ordering::Greater => (false, Reduce(x.clone()), RDResolved(y.clone())),
+                        }
+                    }
+                    _ => (true, Reduce(x.clone()), RRConflict(y.clone()))
+                }
+            }
+            /* The REDUCE/SHIFT case cannot happen because SHIFTs come before
+             ** REDUCEs on the list.  If we reach this point it must be because
+             ** the parser conflict had already been resolved. */
+            _ => return false,
+        };
+        apx.x = ax;
+        apy.x = ay;
+        err
+    }
+
+    /* Reduce the size of the action tables, if possible, by making use
+     ** of defaults.
+     **
+     ** In this version, we take the most frequent REDUCE action and make
+     ** it the default.  Except, there is no default if the wildcard token
+     ** is a possible look-ahead.
+     */
+    fn compress_tables(&mut self) {
+        let def_symbol = self.symbol_find("{default}").unwrap();
+
+        for stp in &self.states {
+            {
+                let mut nbest = 0;
+                let mut rbest = None;
+                let mut uses_wildcard = false;
+                let stp = stp.borrow();
+                for (iap, ap) in stp.ap.iter().enumerate() {
+                    let ap = ap.borrow();
+                    match (&ap.x, &self.wildcard) {
+                        (EAction::Shift(_), Some(w)) => {
+                            let sp = ap.sp.unwrap();
+                            let w = w.unwrap();
+                            if Rc::ptr_eq(&sp, &w) {
+                                uses_wildcard = true;
+                            }
+                        }
+                        (EAction::Reduce(ref rp), _) => {
+                            let rp = rp.unwrap();
+                            if rp.borrow().lhs_start { continue }
+                            if let Some(ref rbest) = rbest {
+                                if Rc::ptr_eq(&rp, &rbest) { continue }
+                            }
+                            let mut n = 1;
+                            for ap2 in &stp.ap[iap + 1..] {
+                                let ap2 = ap2.borrow();
+                                match &ap2.x {
+                                    EAction::Reduce(ref rp2) => {
+                                        let rp2 = rp2.unwrap();
+                                        if let Some(ref rbest) = rbest {
+                                            if Rc::ptr_eq(&rp2, &rbest) { continue }
+                                        }
+                                        if Rc::ptr_eq(&rp2, &rp) {
+                                            n += 1;
+                                        }
+                                    }
+                                    _ => continue
+                                }
+                            }
+                            if n > nbest {
+                                nbest = n;
+                                rbest = Some(rp);
+                            }
+                        }
+                        _ => continue,
+                    }
+                }
+
+                /* Do not make a default if the number of rules to default
+                 ** is not at least 1 or if the wildcard token is a possible
+                 ** lookahead.
+                 */
+                if nbest < 1 || uses_wildcard { continue }
+                let rbest = rbest.unwrap();
+
+                /* Combine matching REDUCE actions into a single default */
+
+                let mut apbest = None;
+                for (iap, ap) in stp.ap.iter().enumerate() {
+                    let bap = ap.borrow();
+                    match &bap.x {
+                        EAction::Reduce(ref rp) => {
+                            let rp = rp.unwrap();
+                            if Rc::ptr_eq(&rp, &rbest) {
+                                apbest = Some((iap, ap));
+                                break;
+                            }
+                        }
+                        _ => ()
+                    }
+                }
+                if let Some((iap, ap)) = apbest {
+                    ap.borrow_mut().sp = (&def_symbol).into();
+                    for ap2 in &stp.ap[iap + 1..] {
+                        let mut ap2 = ap2.borrow_mut();
+                        let unuse = match &ap2.x {
+                            EAction::Reduce(ref rp) => {
+                                let rp = rp.unwrap();
+                                Rc::ptr_eq(&rp, &rbest)
+                            }
+                            _ => false
+                        };
+                        if unuse {
+                            ap2.x = EAction::NotUsed;
+                        }
+                    }
+                }
+            }
+            stp.borrow_mut().ap.sort_by(action_cmp);
+        }
+    }
+
+    /*
+     ** Renumber and resort states so that states with fewer choices
+     ** occur at the end.  Except, keep state 0 as the first state.
+     */
+    fn resort_states(&mut self) {
+        for stp in &self.states {
+
+            let mut n_tkn_act = 0;
+            let mut n_nt_act = 0;
+            let mut i_dflt = self.states.len() + self.rules.len();
+
+            for ap in &stp.borrow().ap {
+                let ap = ap.borrow();
+                match self.compute_action(&ap) {
+                    Some(x) => {
+                        let sp = ap.sp.unwrap();
+                        let index = sp.borrow().index;
+                        if index < self.nterminal {
+                            n_tkn_act += 1;
+                        } else if index < self.nsymbol {
+                            n_nt_act += 1;
+                        } else {
+                            i_dflt = x;
+                        }
+                    }
+                    None => ()
+                }
+            }
+
+            let mut stp = stp.borrow_mut();
+            stp.n_tkn_act = n_tkn_act;
+            stp.n_nt_act = n_nt_act;
+            stp.i_dflt = i_dflt;
+        }
+        self.states[1..].sort_by(Lemon::state_resort_cmp);
+        for (i, stp) in self.states.iter().enumerate() {
+            stp.borrow_mut().state_num = i;
+        }
+    }
+
+    /* Given an action, compute the integer value for that action
+     ** which is to be put in the action table of the generated machine.
+     ** Return None if no action should be generated.
+     */
+    fn compute_action(&self, ap: &Action) -> Option<usize> {
+        use self::EAction::*;
+        let act = match &ap.x {
+            Shift(ref stp) => {
+                let stp = stp.unwrap();
+                let n = stp.borrow().state_num;
+                n
+            }
+            Reduce(ref rp) => {
+                let rp = rp.unwrap();
+                let n = rp.borrow().index + self.states.len();
+                n
+            }
+            Error => self.states.len() + self.rules.len(),
+            Accept => self.states.len() + self.rules.len() + 1,
+            _ => return None,
+        };
+        Some(act)
+    }
+
+    fn _report_output(&self) {
+        for stp in &self.states {
+            let stp = stp.borrow();
+            println!("State {}:", stp.state_num);
+            for cfp in &stp.cfp {
+                let cfp = cfp.borrow();
+                let rule = cfp.rule.unwrap();
+                let rule = rule.borrow();
+                if cfp.dot == rule.rhs.len() {
+                    print!("    {:>5} ", format!("({})", rule.index));
+                } else {
+                    print!("          ");
+                }
+                let lhs = rule.lhs.unwrap();
+                print!("{} ::=", lhs.borrow().name);
+                for (i, (sp,_)) in rule.rhs.iter().enumerate() {
+                    if i == cfp.dot {
+                        print!(" *");
+                    }
+                    let sp = sp.unwrap();
+                    let sp = sp.borrow();
+                    if let MultiTerminal(ref sub_sym) = sp.typ {
+                        for (j, ss) in sub_sym.iter().enumerate() {
+                            let ss = ss.unwrap();
+                            let ss = ss.borrow();
+                            if j == 0 {
+                                print!(" {}", ss.name);
+                            } else {
+                                print!("|{}", ss.name);
+                            }
+                        }
+                    } else {
+                        print!(" {}", sp.name);
+                    }
+                }
+                if cfp.dot == rule.rhs.len() {
+                    print!(" *");
+                }
+                println!();
+            }
+            println!();
+            for ap in &stp.ap {
+                let ap = ap.borrow();
+                use self::EAction::*;
+                let sp = ap.sp.unwrap();
+                let sp = sp.borrow();
+                match ap.x {
+                    Shift(ref stp) => {
+                        let stp = stp.unwrap();
+                        let stp = stp.borrow();
+                        print!("{:>30} shift  {}", sp.name, stp.state_num);
+                    }
+                    Reduce(ref rp) => {
+                        let rp = rp.unwrap();
+                        let rp = rp.borrow();
+                        print!("{:>30} reduce {}", sp.name, rp.index);
+                    }
+                    Accept => {
+                        print!("{:>30} accept", sp.name);
+                    }
+                    Error => {
+                        print!("{:>30} error", sp.name);
+                    }
+                    SRConflict(ref rp) |
+                    RRConflict(ref rp) => {
+                        let rp = rp.unwrap();
+                        let rp = rp.borrow();
+                        print!("{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.index);
+                    }
+                    SSConflict(ref stp) => {
+                        let stp = stp.unwrap();
+                        let stp = stp.borrow();
+                        print!("{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.state_num);
+                    }
+                    SHResolved(ref stp) => {
+                        let stp = stp.unwrap();
+                        let stp = stp.borrow();
+                        print!("{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.state_num);
+                    }
+                    RDResolved(ref rp) => {
+                        let rp = rp.unwrap();
+                        let rp = rp.borrow();
+                        print!("{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.index);
+                    }
+                    _ => continue,
+                }
+                println!();
+            }
+            println!();
+        }
+        println!("----------------------------------------------------");
+        println!("Symbols:");
+        for i in 0 .. self.nsymbol {
+            let sp = self.symbols[i].borrow();
+            print!("  {:3}: {}", i, sp.name);
+            if let NonTerminal{ref first_set, lambda, ..} = sp.typ {
+                print!(":");
+                if lambda {
+                    print!(" <lambda>");
+                }
+                for j in 0 .. self.nterminal {
+                    if first_set.contains(&j) {
+                        print!(" {}", self.symbols[j].borrow().name);
+                    }
+                }
+            }
+            println!();
+        }
+    }
+
+    fn get_precedence(p: &Option<WRc<RefCell<Symbol>>>) -> Option<Precedence> {
+        p.as_ref().and_then(|y| {
+            let y = y.unwrap();
+            let y = y.borrow();
+            y.assoc
+        })
+    }
+
+    fn state_find(&mut self, bp: &ConfigList) -> Option<Rc<RefCell<State>>> {
+        let res = self.states.iter().find(|s| {
+            let ref sbp = s.borrow().bp;
+            if sbp.len() != bp.len() {
+                return false;
+            }
+            for (a, b) in sbp.iter().zip(bp) {
+                let a = a.unwrap();
+                let a = a.borrow();
+                let b = b.borrow();
+                if !Rc::ptr_eq(&a.rule.unwrap(), &b.rule.unwrap()) ||
+                    a.dot != b.dot {
+                    return false;
+                }
+            }
+            true
+        });
+        res.map(|x| x.clone())
+    }
+
+    /* Compute the closure of the configuration list */
+    fn configlist_closure(&mut self, mut cur: ConfigList) -> io::Result<ConfigList> {
+        let mut i = 0;
+        while i < cur.len() {
+            //println!("I = {} < {}", i, cur.len());
+            let cfp = cur[i].clone();
+            let rp = cfp.borrow().rule.unwrap();
+            let ref rhs = rp.borrow().rhs;
+            let dot = cfp.borrow().dot;
+            if dot < rhs.len() {
+                let sp = rhs[dot].0.unwrap();
+                let ref spt = sp.borrow().typ;
+                if let NonTerminal{ref rules, ..} = spt {
+                    if rules.is_empty() {
+                        let is_err_sym = Rc::ptr_eq(&sp, &self.err_sym.unwrap());
+                        if !is_err_sym {
+                            return error("Nonterminal has no rules");
+                        }
+                    }
+                    for newrp in rules {
+                        let newcfp = Lemon::add_config(&mut cur, newrp.unwrap(), 0);
+                        let mut broken = false;
+                        for xsp in &rhs[dot + 1 ..] {
+                            let xsp = xsp.0.unwrap();
+                            let xsp = xsp.borrow();
+                            match xsp.typ {
+                                Terminal => {
+                                    newcfp.borrow_mut().fws.insert(xsp.index);
+                                    broken = true;
+                                    break;
+                                }
+                                MultiTerminal(ref sub_sym) => {
+                                    let mut bn = newcfp.borrow_mut();
+                                    for k in sub_sym {
+                                        let k = k.unwrap();
+                                        bn.fws.insert(k.borrow().index);
+                                    }
+                                    broken = true;
+                                    break;
+                                }
+                                NonTerminal{ ref first_set, lambda, ..} => {
+                                    newcfp.borrow_mut().fws.append(&mut first_set.clone());
+                                    if lambda {
+                                        broken = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if !broken {
+                            cfp.borrow_mut().fplp.push((&newcfp).into());
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        Ok(cur)
+    }
+
+    fn add_config(cfgs: &mut ConfigList, rp: Rc<RefCell<Rule>>, dot: usize) -> Rc<RefCell<Config>> {
+        match cfgs.iter().position(|x| config_cmp_key(x, rp.borrow().index, dot) == Ordering::Equal) {
+            Some(i) => cfgs[i].clone(),
+            None => {
+                let c = Rc::new(RefCell::new(Config {
+                    rule: rp.into(),
+                    dot,
+                    fws: RuleSet::new(),
+                    fplp: Vec::new(),
+                    bplp: Vec::new(),
+                    //stp: None,
+                    status: CfgStatus::Incomplete,
+                }));
+                cfgs.push(c.clone());
+                c
+            }
+        }
+    }
+
+    fn symbol_new_b(&mut self, name: &[u8], typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+        Lemon::symbol_new(&mut self.symbols, String::from_utf8_lossy(name).as_ref(), typ)
+    }
+    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+        Lemon::symbol_new(&mut self.symbols, name.to_string().as_ref(), typ)
+    }
+    fn symbol_new(symbols: &mut Vec<Rc<RefCell<Symbol>>>, name: &str, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+        if !name.is_empty() {
+            for s in symbols.iter() {
+                let mut b = s.borrow_mut();
+                if b.name == name {
+                    b.use_cnt += 1;
+                    return s.into();
+                }
+            }
+        }
+        let typ = match typ {
+            NewSymbolType::Terminal => Terminal,
+            NewSymbolType::NonTerminal => NonTerminal {
+                    rules: Vec::new(),
+                    first_set: RuleSet::new(),
+                    lambda: false,
+                },
+            NewSymbolType::MultiTerminal => MultiTerminal(Vec::new())
+        };
+        let symbol = Symbol {
+            name: name.to_string(),
+            index: 0,
+            typ,
+            fallback: None,
+            assoc: None,
+            use_cnt: 1,
+            data_type: None,
+            dt_num: None,
+        };
+        let symbol = Rc::new(RefCell::new(symbol));
+        let w = (&symbol).into();
+        symbols.push(symbol);
+        w
+    }
+    fn symbol_find(&self, name: &str) -> Option<Rc<RefCell<Symbol>>> {
+        for s in &self.symbols {
+            let b = s.borrow();
+            if b.name == name {
+                return Some(s.clone());
+            }
+        }
+        None
+    }
+
+
+    /*
+     ** Compare two states for sorting purposes.  The smaller state is the
+     ** one with the most non-terminal actions.  If they have the same number
+     ** of non-terminal actions, then the smaller is the one with the most
+     ** token actions.
+     */
+    fn state_resort_cmp(a: &Rc<RefCell<State>>, b: &Rc<RefCell<State>>) -> Ordering {
+        let a = a.borrow();
+        let b = b.borrow();
+        (b.n_nt_act, b.n_tkn_act, b.state_num).cmp(&(a.n_nt_act, a.n_tkn_act, a.state_num))
+    }
+
+    /* In spite of its name, this function is really a scanner.  It read
+     * in the entire input file (all at once) then tokenizes it.  Each
+     * token is passed to the function "parseonetoken" which builds all
+     * the appropriate data structures in the global state vector "self".
+     */
+    fn parse(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
+        let mut buf = fs::read(path)?;
+        buf.push(0);
+        let mut lineno = 1;
+        let mut i = 0;
+        let mut pst = ParserState::WaitingForDeclOrRule;
+        let mut pdata = ParserData {
+            declassoc: Precedence(0, Associativity::Left),
+            rules: Vec::new(),
+        };
+        while i < buf.len() - 1 {
+            //Keep track of the line number
+            if buf[i] == b'\n' {
+                lineno += 1;
+            }
+            //Skip all white space
+            if buf[i].is_ascii_whitespace() {
+                i += 1;
+                continue;
+            }
+            //Skip C++ style comments
+            if buf[i] == b'/' && buf[i+1] == b'/' {
+                i += 2;
+                while buf[i] != 0 && buf[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            //Skip C style comments
+            if buf[i] == b'/' && buf[i+1] == b'*' {
+                i += 2;
+                while buf[i] != 0 && (buf[i] != b'/' || buf[i-1] != b'*') {
+                    if buf[i] == b'\n' {
+                        lineno += 1;
+                    }
+                    i += i;
+                }
+                if buf[i] != 0 {
+                    i += 1;
+                }
+                continue;
+            }
+            //Mark the beginning of the token
+            let tokenstart = i;
+            let _tokenlineno = lineno;
+            match buf[i] {
+                //String literals
+                b'"' => {
+                    i += 1;
+                    while buf[i] != 0 && buf[i] != b'"' {
+                        if buf[i] == b'\n' {
+                            lineno += 1;
+                        }
+                        i += i;
+                    }
+                    if buf[i] == 0 {
+                        return error("String starting on this line is not terminated before the end of the file.");
+                    }
+                    i += 1;
+                }
+                //A block of code
+                b'{' => {
+                    i += 1;
+                    let mut nesting = 1;
+                    while buf[i] != 0 && nesting > 0 {
+                        match buf[i] {
+                            b'}' => nesting -= 1,
+                            b'{' => nesting += 1,
+                            _ => ()
+                        }
+                        i += 1;
+                    }
+                }
+                //Identifiers
+                c if c.is_ascii_alphanumeric() => {
+                    while buf[i] != 0 && (buf[i].is_ascii_alphanumeric() || buf[i] == b'_') {
+                        i += 1;
+                    }
+                }
+                //The operator "::="
+                b':' if buf[i+1] == b':' && buf[i+2] == b'=' => {
+                    i += 3;
+                }
+                //Multiterminal
+                b'/' | b'|' if buf[i+1].is_ascii_alphabetic() => {
+                    i += 2;
+                    while buf[i] != 0 && (buf[i].is_ascii_alphanumeric() || buf[i] == b'_') {
+                        i += 1;
+                    }
+                }
+                //All other (one character) operators
+                _ => {
+                    i += 1;
+                }
+            }
+            pst = self.parse_one_token(pst, &mut pdata, &buf[tokenstart..i])?;
+        }
+        self.rules = pdata.rules;
+        Ok(())
+    }
+
+    fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: &Decl) -> io::Result<()> {
+        println!("PARSE {:?}", decl);
+        match decl {
+            Decl::Type(id, _ty) => {
+                let nst = if is_uppercase(id) {
+                    NewSymbolType::Terminal
+                } else if is_lowercase(id) {
+                    NewSymbolType::NonTerminal
+                } else {
+                    return error("Symbol name missing");
+                };
+                let sp = self.symbol_new_t(id, nst).unwrap();
+                let mut sp = sp.borrow_mut();
+                if sp.data_type.is_some() {
+                    return error("Symbol type already defined");
+                }
+                sp.data_type = Some("ty".to_string()); //TODO Type
+            }
+            Decl::Assoc(a, ids) => {
+                pdt.declassoc = pdt.declassoc.get_next(*a);
+                for token in ids {
+                    if !is_uppercase(token) {
+                        return error("Precedence must be assigned to a token");
+                    }
+                    let sp = self.symbol_new_t(token, NewSymbolType::Terminal).unwrap();
+                    let mut b = sp.borrow_mut();
+                    match b.assoc {
+                        Some(_) => return error("Symbol has already been given a precedence"),
+                        None => b.assoc = Some(pdt.declassoc),
+                    }
+                }
+            }
+            Decl::DefaultType(_ty) => {
+                if self.var_type.is_some() {
+                    return error("Default type already defined");
+                }
+                self.var_type = Some("ty".to_string()); //TODO Type
+            }
+            Decl::StartSymbol(_id) => {
+                if self.start.is_some() {
+                    return error("Start symbol already defined");
+                }
+                self.start = Some("id".to_string()); //TODO Ident
+            }
+            Decl::Fallback(fb, ids) => {
+                    if !is_uppercase(fb) {
+                        return error("Fallback must be a token");
+                    }
+                let fallback = self.symbol_new_t(fb, NewSymbolType::Terminal);
+                for id in ids {
+                    if !is_uppercase(fb) {
+                        return error("Fallback must be a token");
+                    }
+                    let sp = self.symbol_new_t(id, NewSymbolType::Terminal).unwrap();
+                    let mut b = sp.borrow_mut();
+                    if b.fallback.is_some() {
+                        return error("More than one fallback assigned to token");
+                    }
+                    b.fallback = Some(fallback.clone());
+                    self.has_fallback = true;
+                }
+            }
+            Decl::Wildcard(id) => {
+                if self.wildcard.is_some() {
+                    return error("Wildcard already defined");
+                }
+                if !is_uppercase(id) {
+                    return error("Wildcard must be a token");
+                }
+                let sp = self.symbol_new_t(id, NewSymbolType::Terminal);
+                self.wildcard = Some(sp);
+            }
+            Decl::TokenClass(tk, ids) => {
+                let tk = self.symbol_new_t(tk, NewSymbolType::MultiTerminal).unwrap();
+                if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
+                    for id in ids {
+                        let sp = self.symbol_new_t(id, NewSymbolType::Terminal);
+                        sub_sym.push(sp.into());
+                    }
+                } else {
+                    unreachable!();
+                };
+            }
+            Decl::Rule{ lhs, rhs, action: _action, prec } => {
+                if !is_lowercase(lhs) {
+                    return error("LHS of rule must be non-terminal");
+                }
+                let lhs = self.symbol_new_t(lhs, NewSymbolType::NonTerminal);
+                let rhs = rhs.into_iter().map(|(toks, alias)| {
+                    let tok = if toks.len() == 1 {
+                        let tok = toks.into_iter().next().unwrap();
+                        let nst = if is_uppercase(&tok) {
+                            NewSymbolType::Terminal
+                        } else if is_lowercase(&tok) {
+                            NewSymbolType::NonTerminal
+                        } else {
+                            return error("Invalid token in RHS of rule");
+                        };
+                        self.symbol_new_t(&tok, nst)
+                    } else {
+                        let mt = self.symbol_new_b(b"", NewSymbolType::MultiTerminal).unwrap();
+                        let mut ss = Vec::new();
+                        for tok in toks {
+                            if !is_uppercase(tok) {
+                                return error("Cannot form a compound containing a non-terminal");
+                            }
+                            ss.push(self.symbol_new_t(tok, NewSymbolType::Terminal));
+                        }
+                        if let MultiTerminal(ref mut sub_sym) = mt.borrow_mut().typ {
+                            sub_sym.extend(ss);
+                        } else {
+                            unreachable!();
+                        }
+                        mt.into()
+                    };
+                    let alias = alias.as_ref().map(|id| id.to_string());
+                    Ok((tok, alias))
+                }).collect::<io::Result<Vec<_>>>()?;
+
+                let prec_sym = match prec.as_ref() {
+                    Some(id) => {
+                        if !is_uppercase(id) {
+                            return error("The precedence symbol must be a terminal");
+                        }
+                        Some(self.symbol_new_t(id, NewSymbolType::Terminal))
+                    }
+                    None => None
+                };
+
+                let index = pdt.rules.len();
+                let rule = Rule {
+                    lhs: lhs.clone(),
+                    lhs_start: false,
+                    rhs,
+                    code: Some("gr".to_string()), //TODO Group
+                    prec_sym,
+                    index,
+                    can_reduce: false,
+                };
+                let rule = Rc::new(RefCell::new(rule));
+                let lhs = lhs.unwrap();
+                if let NonTerminal{ref mut rules, ..} = lhs.borrow_mut().typ {
+                    rules.push((&rule).into());
+                } else {
+                    unreachable!();
+                }
+                pdt.rules.push(rule);
+            }
+        }
+        Ok(())
+    }
+    fn parse_one_token(&mut self, pst: ParserState, pdt: &mut ParserData, token: &[u8]) -> io::Result<ParserState> {
+        use self::ParserState::*;
+
+        let new_pst = match pst {
+            WaitingForDeclOrRule if token[0] == b'%' => {
+                WaitingForDeclKeyword
+            }
+            WaitingForDeclOrRule if token[0].is_ascii_lowercase() => {
+                let sym = self.symbol_new_b(token, NewSymbolType::NonTerminal);
+                WaitingForArrow(sym.unwrap())
+            }
+            WaitingForDeclOrRule if token[0] == b'{' => {
+                let mut rule = match pdt.rules.last_mut() {
+                    Some(r) => r.borrow_mut(),
+                    _ => return error("There is no prior rule to attach code"),
+                };
+                if rule.code.is_some() {
+                    return error("Code framgent is not the first");
+                }
+                rule.code = Some(String::from_utf8_lossy(token).into_owned());
+                WaitingForDeclOrRule
+            }
+            WaitingForDeclOrRule if token[0] == b'[' => {
+                PrecedenceMark1
+            }
+            WaitingForDeclOrRule => {
+                return error("Token should be % or a nonterminal name");
+            }
+
+            PrecedenceMark1 if token[0].is_ascii_uppercase() => {
+                let mut rule = match pdt.rules.last_mut() {
+                    Some(r) => r.borrow_mut(),
+                    _ => return error("There is no prior rule to attach code"),
+                };
+                if rule.prec_sym.is_some() {
+                    return error("Assoc mark is not the first");
+                }
+                rule.prec_sym = Some(self.symbol_new_b(token, NewSymbolType::Terminal));
+                PrecedenceMark2
+            }
+            PrecedenceMark1 => {
+                return error("The precedence symbol must be a terminal");
+            }
+
+            PrecedenceMark2 if token == b"]" => {
+                WaitingForDeclOrRule
+            }
+            PrecedenceMark2 => {
+                return error("Missing ] on precedence mark");
+            }
+
+            WaitingForArrow(lhs) => {
+                if token == b"::=" {
+                    InRhs(lhs, Vec::new())
+                } else {
+                    return error("Expected a ::= following the LHS symbol");
+                }
+            }
+
+            InRhs(lhs, mut rhs) => {
+                if token == b"." {
+                    let rhs = rhs.into_iter().map(|(r,a)| (r.into(), a)).collect::<Vec<_>>();
+                    let index = pdt.rules.len();
+                    let rule = Rule {
+                        lhs: (&lhs).into(),
+                        lhs_start: false,
+                        rhs,
+                        code: None,
+                        prec_sym: None,
+                        index,
+                        can_reduce: false,
+                    };
+                    let rule = Rc::new(RefCell::new(rule));
+                    if let NonTerminal{ref mut rules, ..} = lhs.borrow_mut().typ {
+                        rules.push((&rule).into());
+                    }
+                    pdt.rules.push(rule);
+                    WaitingForDeclOrRule
+                } else if token[0].is_ascii_lowercase() {
+                    let token = self.symbol_new_b(token, NewSymbolType::NonTerminal);
+                    rhs.push((token.unwrap(), None));
+                    InRhs(lhs, rhs)
+                } else if token[0].is_ascii_uppercase() {
+                    let token = self.symbol_new_b(token, NewSymbolType::Terminal);
+                    rhs.push((token.unwrap(), None));
+                    InRhs(lhs, rhs)
+                } else if token[0] == b'|' || token[0] == b'/' {
+                    if !token[1].is_ascii_uppercase() {
+                        return error("Cannot form a compound containing a non-terminal");
+                    }
+                    let s2 = self.symbol_new_b(&token[1..], NewSymbolType::Terminal);
+
+                    let msp = rhs.last().unwrap().0.clone();
+                    let mut msp = msp.borrow_mut();
+                    match msp.typ {
+                        MultiTerminal(ref mut sub_sym) => {
+                            sub_sym.push(s2.into());
+                        }
+                        NonTerminal{..} => {
+                            return error("Cannot form a compound containing a non-terminal");
+                        }
+                        Terminal => {
+                            let s = self.symbol_new_b(b"", NewSymbolType::MultiTerminal).unwrap();
+                            let (orig, alias) = rhs.pop().unwrap();
+                            if let MultiTerminal(ref mut sub_sym) = s.borrow_mut().typ {
+                                sub_sym.push(orig.into());
+                                sub_sym.push(s2.into());
+                            };
+                            rhs.push((s.into(), alias));
+                        }
+                    };
+                    InRhs(lhs, rhs)
+                } else if token == b"(" {
+                    RhsAlias1(lhs, rhs)
+                } else {
+                    return error("Illegal character on RHS of rule");
+                }
+            }
+
+            RhsAlias1(lhs, mut rhs) => {
+                if token[0].is_ascii_alphabetic() {
+                    let token = String::from_utf8_lossy(token).into_owned();
+                    let r = match rhs.pop() {
+                        Some((x, None)) => (x, Some(token)),
+                        _ => return error("Invalid alias"),
+                    };
+                    rhs.push(r);
+                    RhsAlias2(lhs, rhs)
+                } else {
+                    return error("Invalid alias for RHS symbol");
+                }
+            }
+
+            RhsAlias2(lhs, rhs) => {
+                if token == b")" {
+                    InRhs(lhs, rhs)
+                } else {
+                    return error("Missing ) following RHS alias");
+                }
+            }
+
+            WaitingForDeclKeyword if token[0].is_ascii_alphabetic() => {
+                match token {
+                    b"include" |
+                    b"derive_token" |
+                    b"code" |
+                    b"syntax_error" |
+                    b"parse_accept" |
+                    b"parse_failure" |
+                    b"stack_size" |
+                    b"stack_overflow" => {
+                        WaitingForDeclArg(Box::new(|_l, _s| ()))
+                    }
+                    b"extra_argument" => {
+                        WaitingForDeclArg(Box::new(|l, s| l.arg = Some(s)))
+                    }
+                    b"default_type" => {
+                        WaitingForDeclArg(Box::new(|l, s| l.var_type = Some(s)))
+                    }
+                    b"start_symbol" => {
+                        WaitingForDeclArg(Box::new(|l, s| l.start = Some(s)))
+                    }
+                    b"left" => {
+                        pdt.declassoc = pdt.declassoc.get_next(Associativity::Left);
+                        WaitingForPrecedenceSymbol
+                    }
+                    b"right" => {
+                        pdt.declassoc = pdt.declassoc.get_next(Associativity::Right);
+                        WaitingForPrecedenceSymbol
+                    }
+                    b"nonassoc" => {
+                        pdt.declassoc = pdt.declassoc.get_next(Associativity::None);
+                        WaitingForPrecedenceSymbol
+                    }
+                    b"type" => {
+                        WaitingForDatatypeSymbol
+                    }
+
+                    b"fallback" => {
+                        WaitingForFallbackId(None)
+                    }
+                    b"wildcard" => {
+                        WaitingForWildcardId
+                    }
+                    b"token_class" => {
+                        WaitingForClassId
+                    }
+                    _ => {
+                        return error("unknown declaration keyword");
+                    }
+                }
+            }
+            WaitingForDeclKeyword => {
+                return error("Illegal declaration keyword");
+            }
+
+            WaitingForDatatypeSymbol => {
+                let nst = if token[0].is_ascii_uppercase() {
+                    NewSymbolType::Terminal
+                } else if token[0].is_ascii_lowercase() {
+                    NewSymbolType::NonTerminal
+                } else {
+                    return error("Symbol name missing");
+                };
+                let sp = self.symbol_new_b(token, nst).unwrap();
+                WaitingForDeclArg(Box::new(move |_l, s| {
+                    sp.borrow_mut().data_type = Some(s);
+                }))
+            }
+
+            WaitingForPrecedenceSymbol if token == b"." => {
+                WaitingForDeclOrRule
+            }
+            WaitingForPrecedenceSymbol if token[0].is_ascii_uppercase() => {
+                let sp = self.symbol_new_b(token, NewSymbolType::Terminal).unwrap();
+                let mut b = sp.borrow_mut();
+                match b.assoc {
+                    Some(_) => return error("Symbol has already been given a precedence"),
+                    None => b.assoc = Some(pdt.declassoc),
+                }
+                WaitingForPrecedenceSymbol
+            }
+            WaitingForPrecedenceSymbol => {
+                return error("Can't assign precedence to this");
+            }
+
+            WaitingForDeclArg(declargslot) => {
+                if token[0] == b'{' || token[0] == b'"' || token[0].is_ascii_alphanumeric() {
+                    let token = match token[0] {
+                        b'{' | b'"' => &token[1..token.len()-2],
+                        _ => &token
+                    };
+                    let token = String::from_utf8_lossy(token).trim().to_string();
+                    declargslot(self, token);
+                    WaitingForDeclOrRule
+                } else {
+                    return error("Illegal argument");
+                }
+            }
+
+            WaitingForFallbackId(fallback) => {
+                if token == b"." {
+                    WaitingForDeclOrRule
+                } else if token[0].is_ascii_uppercase() {
+                    let sp = self.symbol_new_b(token, NewSymbolType::Terminal);
+                    let fallback = match fallback {
+                        None => Some(sp.unwrap()),
+                        Some(fb) => {
+                            let sp = sp.unwrap();
+                            let mut b = sp.borrow_mut();
+                            if b.fallback.is_some() {
+                                return error("More than one fallback assigned to token");
+                            }
+                            b.fallback = Some((&fb).into());
+                            self.has_fallback = true;
+                            Some(fb)
+                        }
+                    };
+                    WaitingForFallbackId(fallback)
+                } else {
+                    return error("Fallback argument should be a token");
+                }
+            }
+
+            WaitingForWildcardId if token == b"." => {
+                WaitingForDeclOrRule
+            }
+            WaitingForWildcardId if token[0].is_ascii_uppercase() => {
+                let sp = self.symbol_new_b(token, NewSymbolType::Terminal);
+                if self.wildcard.is_some() {
+                    return error("Extra wildcard");
+                }
+                self.wildcard = Some(sp);
+                WaitingForWildcardId
+            }
+            WaitingForWildcardId => {
+                return error("Wildcard argument should be a token");
+            }
+
+            WaitingForClassId if token[0].is_ascii_lowercase() => {
+                let sp = self.symbol_new_b(token, NewSymbolType::MultiTerminal);
+                WaitingForClassToken(sp.unwrap())
+            }
+            WaitingForClassId => {
+                return error("token_class must be followed by an identifier");
+            }
+
+            WaitingForClassToken(_) if token == b"." => {
+                WaitingForDeclOrRule
+            }
+            WaitingForClassToken(tkclass) => {
+                if token[0].is_ascii_uppercase() {
+                    if let MultiTerminal(ref mut sub_sym) = tkclass.borrow_mut().typ {
+                        let sp = self.symbol_new_b(token, NewSymbolType::Terminal);
+                        sub_sym.push(sp.into());
+                    }
+                    WaitingForClassToken(tkclass.clone())
+                } else if (token[0] == b'|' || token[0] == b'/') && token.len() > 1 && token[1].is_ascii_uppercase() {
+                    if let MultiTerminal(ref mut sub_sym) = tkclass.borrow_mut().typ {
+                        let sp = self.symbol_new_b(&token[1..], NewSymbolType::Terminal);
+                        sub_sym.push(sp.into());
+                    } else {
+                        assert!(false);
+                    }
+                    WaitingForClassToken(tkclass.clone())
+                } else {
+                    return error("token_class argument should be a token");
+                }
+            }
+        };
+
+        Ok(new_pst)
+    }
+
+    fn generate_source(&self) -> io::Result<()> {
+        //println!("----------------------------------------------------");
+        println!("#![allow(dead_code)]");
+        println!("#![allow(unused_variables)]");
+        print!("{}", include_str!("templ/t0.rs"));
+        /* Generate the defines */
+        println!("type YYCODETYPE = {};", minimum_size_type(true, self.nsymbol+1));
+        println!("const YYNOCODE: i32 = {};", self.nsymbol + 1);
+        println!("type YYACTIONTYPE = {};", minimum_size_type(false, self.states.len() + self.rules.len() + 5));
+
+        if let Some(ref wildcard) = self.wildcard {
+            let wildcard = wildcard.unwrap();
+            let wildcard = wildcard.borrow();
+            if wildcard.data_type.is_some() {
+                return error("Wildcard token must not have a type");
+            }
+            println!("const YYWILDCARD: YYCODETYPE = {};", wildcard.index);
+
+        } else {
+            println!("const YYWILDCARD: YYCODETYPE = 0;");
+        }
+
+        /*
+         ** Print the definition of the union used for the parser's data stack.
+         ** This union contains fields for every possible data type for tokens
+         ** and nonterminals.  In the process of computing and printing this
+         ** union, also set the ".dtnum" field of every terminal and nonterminal
+         ** symbol.
+         */
+        let mut types = HashMap::new();
+
+        for i in 0..self.nsymbol {
+            let ref sp = self.symbols[i];
+
+            if Rc::ptr_eq(&sp, &self.err_sym.unwrap()) {
+                continue;
+            }
+
+            let mut sp = sp.borrow_mut();
+
+            /* The ".dtnum" field of each symbol is filled.  A ".dtnum" value of 0 is
+             ** used for terminal symbols.  If there is no %default_type defined then
+             ** 0 is also used as the .dtnum value for nonterminals which do not specify
+             ** a datatype using the %type directive.
+             */
+            if let SymbolType::MultiTerminal(_) = sp.typ {
+                sp.dt_num = None;
+                continue;
+            }
+            let cp = sp.data_type.as_ref().or(self.var_type.as_ref()).map(|x| x.to_string());
+            let cp = match cp {
+                None => {
+                    sp.dt_num = None;
+                    continue;
+                }
+                Some(cp) => cp
+            };
+            let next = types.len() + 1;
+            sp.dt_num = Some(*types.entry(cp).or_insert(next));
+        }
+
+        /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
+        println!("enum YYMinorType {{");
+        println!("    YY0,");
+        for (k, v) in &types {
+            println!("    YY{}({}),", v, k);
+        }
+        println!("}}");
+
+        println!("const YYNSTATE: i32 = {};", self.states.len());
+        println!("const YYNRULE: i32 = {};", self.rules.len());
+
+        {
+            let err_sym = self.err_sym.unwrap();
+            let mut err_sym = err_sym.borrow_mut();
+            err_sym.dt_num = Some(types.len() + 1);
+            if err_sym.use_cnt > 0 {
+                println!("const YYERRORSYMBOL: i32 = {};", err_sym.index);
+            } else {
+                println!("const YYERRORSYMBOL: i32 = 0;");
+            }
+        }
+
+        /* Generate the action table and its associates:
+         **
+         **  yy_action[]        A single table containing all actions.
+         **  yy_lookahead[]     A table containing the lookahead for each entry in
+         **                     yy_action.  Used to detect hash collisions.
+         **  yy_shift_ofst[]    For each state, the offset into yy_action for
+         **                     shifting terminals.
+         **  yy_reduce_ofst[]   For each state, the offset into yy_action for
+         **                     shifting non-terminals after a reduce.
+         **  yy_default[]       Default action for each state.
+         */
+
+        let mut ax = Vec::with_capacity(2 * self.states.len());
+        /* Compute the actions on all states and count them up */
+        for stp in &self.states {
+            ax.push(AxSet {
+                stp: stp.clone(),
+                is_tkn: true,
+                n_action: stp.borrow().n_tkn_act,
+            });
+            ax.push(AxSet {
+                stp: stp.clone(),
+                is_tkn: false,
+                n_action: stp.borrow().n_nt_act,
+            });
+        }
+
+        ax.sort_by_key(|a| a.n_action);
+        ax.reverse();
+
+        let mut max_tkn_ofst = 0;
+        let mut min_tkn_ofst = 0;
+        let mut max_nt_ofst = 0;
+        let mut min_nt_ofst = 0;
+
+        /* Compute the action table.  In order to try to keep the size of the
+         ** action table to a minimum, the heuristic of placing the largest action
+         ** sets first is used.
+         */
+        let mut acttab = ActTab::new();
+
+        for a in &ax {
+            let mut actset = ActionSet::new();
+
+            if a.n_action == 0 { continue }
+            //println!("action {} {}", a.n_action, a.stp.borrow().state_num);
+            if a.is_tkn {
+                for ap in &a.stp.borrow().ap {
+                    let ap = ap.borrow();
+                    let sp = ap.sp.unwrap();
+                    let sp = sp.borrow();
+                    if sp.index >= self.nterminal { continue }
+                    match self.compute_action(&ap) {
+                        None => continue,
+                        Some(action) => actset.add_action(sp.index, action),
+                    }
+                }
+                //println!("ST TE {}", a.stp.borrow().state_num);
+                let ofs = acttab.insert_action_set(&actset);
+                let mut stp = a.stp.borrow_mut();
+                stp.i_tkn_ofst = Some(ofs);
+                min_tkn_ofst = cmp::min(ofs, min_tkn_ofst);
+                max_tkn_ofst = cmp::max(ofs, max_tkn_ofst);
+            } else {
+                for ap in &a.stp.borrow().ap {
+                    let ap = ap.borrow();
+                    let sp = ap.sp.unwrap();
+                    let sp = sp.borrow();
+                    if sp.index < self.nterminal { continue }
+                    if sp.index == self.nsymbol { continue }
+                    match self.compute_action(&ap) {
+                        None => continue,
+                        Some(action) => actset.add_action(sp.index, action),
+                    }
+                }
+                //println!("ST NT {}", a.stp.borrow().state_num);
+                let ofs = acttab.insert_action_set(&actset);
+                let mut stp = a.stp.borrow_mut();
+                stp.i_nt_ofst = Some(ofs);
+                min_nt_ofst = cmp::min(ofs, min_nt_ofst);
+                max_nt_ofst = cmp::max(ofs, max_nt_ofst);
+            }
+        }
+        /* Output the yy_action table */
+        //TODO derive
+        println!("pub enum Token {{");
+        println!("    EOI, //0");
+        for i in 1 .. self.nterminal {
+            let ref s = self.symbols[i];
+            let s = s.borrow();
+            match s.data_type {
+                Some(ref dt) => {
+                    println!("    {}({}), //{}", s.name, dt.trim(), i)
+                }
+                None => {
+                    println!("    {}, //{}", s.name, i);
+                }
+            }
+        }
+        println!("}}");
+        println!("pub const TOKEN_EOI: i32 = 0;");
+        for i in 1..self.nterminal {
+            println!("pub const TOKEN_{}: i32 = {};", self.symbols[i].borrow().name, i);
+        }
+
+        println!("#[inline]");
+        println!("fn token_value(t: Token) -> (i32, YYMinorType) {{");
+        println!("    match t {{");
+        println!("        Token::EOI => (0, YYMinorType::YY0),");
+        for i in 1 .. self.nterminal {
+            let s = self.symbols[i].borrow();
+            match s.dt_num {
+                Some(dt) => {
+                    println!("        Token::{}(x) => ({}, YYMinorType::YY{}(x)),", s.name, i, dt);
+                }
+                None => {
+                    println!("        Token::{} => ({}, YYMinorType::YY0),", s.name, i);
+                }
+            }
+        }
+        println!("    }}");
+        println!("}}");
+
+        /* Return the number of entries in the yy_action table */
+        let n = acttab.a_action.len();
+        println!("const YY_ACTTAB_COUNT: i32 = {};", n);
+        println!("const YY_ACTION: [YYACTIONTYPE; {}] = [", n);
+        let mut j = 0;
+        for (i, ac) in acttab.a_action.iter().enumerate() {
+            let action = match ac {
+                None => self.states.len() + self.rules.len() + 2,
+                Some(a) => a.action,
+            };
+            if j==0 {
+                print!(" /* {:>5} */ ", i);
+            }
+            print!(" {:>4},", action);
+            if j == 9 || i == n - 1 {
+                println!();
+                j = 0;
+            } else {
+                j += 1;
+            }
+        }
+        println!("];");
+
+        /* Output the yy_lookahead table */
+        println!("const YY_LOOKAHEAD: [YYCODETYPE; {}] = [", n);
+        let mut j = 0;
+        for (i, ac) in acttab.a_action.iter().enumerate() {
+            let la = match ac {
+                None => self.nsymbol,
+                Some(a) => a.lookahead,
+            };
+            if j==0 {
+                print!(" /* {:>5} */ ", i);
+            }
+            print!(" {:>4},", la);
+            if j == 9 || i == n - 1 {
+                println!();
+                j = 0;
+            } else {
+                j += 1;
+            }
+        }
+        println!("];");
+
+        /* Output the yy_shift_ofst[] table */
+        println!("const YY_SHIFT_USE_DFLT: i32 = {};", min_tkn_ofst - 1);
+        let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
+                        st.borrow().i_tkn_ofst.is_some()
+                    ).unwrap();
+        println!("const YY_SHIFT_COUNT: i32 = {};", n);
+        println!("const YY_SHIFT_MIN: i32 = {};", min_tkn_ofst);
+        println!("const YY_SHIFT_MAX: i32 = {};", max_tkn_ofst);
+        let n = n + 1;
+        println!("const YY_SHIFT_OFST: [{}; {}] = [",
+                minimum_size_type(true, max_tkn_ofst as usize), n);
+        let mut j = 0;
+        for i in 0 .. n {
+            let ref stp = self.states[i];
+            let stp = stp.borrow();
+            let ofst = stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1);
+            if j == 0 {
+                print!(" /* {:>5} */ ", i);
+            }
+            print!(" {:>4},", ofst);
+            if j == 9 || i == n - 1 {
+                println!();
+                j = 0;
+            } else {
+                j += 1;
+            }
+        }
+        println!("];");
+
+        /* Output the yy_reduce_ofst[] table */
+        println!("const YY_REDUCE_USE_DFLT: i32 = {};", min_nt_ofst - 1);
+        let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
+                        st.borrow().i_nt_ofst.is_some()
+                    ).unwrap();
+        println!("const YY_REDUCE_COUNT: i32 = {};", n);
+        println!("const YY_REDUCE_MIN: i32 = {};", min_nt_ofst);
+        println!("const YY_REDUCE_MAX: i32 = {};", max_nt_ofst);
+        let n = n + 1;
+        println!("const YY_REDUCE_OFST: [{}; {}] = [",
+                minimum_size_type(true, max_nt_ofst as usize), n);
+        let mut j = 0;
+        for i in 0 .. n {
+            let ref stp = self.states[i];
+            let stp = stp.borrow();
+            let ofst = stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1);
+            if j == 0 {
+                print!(" /* {:>5} */ ", i);
+            }
+            print!(" {:>4},", ofst);
+            if j == 9 || i == n - 1 {
+                println!();
+                j = 0;
+            } else {
+                j += 1;
+            }
+        }
+        println!("];");
+
+        /* Output the default action table */
+        let n = self.states.len();
+        println!("const YY_DEFAULT: [YYACTIONTYPE; {}] = [", n);
+        for i in 0 .. n {
+            let ref stp = self.states[i];
+            let stp = stp.borrow();
+            if j == 0 {
+                print!(" /* {:>5} */ ", i);
+            }
+            print!(" {:>4},", stp.i_dflt);
+            if j == 9 || i == n - 1 {
+                println!();
+                j = 0;
+            } else {
+                j += 1;
+            }
+        }
+        println!("];");
+
+        /* Generate the table of fallback tokens. */
+        let mx = self.symbols.iter().enumerate().rfind(|(_,sy)|
+                        sy.borrow().fallback.is_some()
+                    ).map(|(x,_)| x + 1).unwrap_or(0); //TODO check if there is any
+        println!("const YY_FALLBACK: [i32; {}] = [", mx);
+        for i in 0 .. mx {
+            let ref p = self.symbols[i];
+            let p = p.borrow();
+            match p.fallback {
+                None => {
+                    println!("    0,  /* {:>10} => nothing */", p.name);
+                }
+                Some(ref fb) => {
+                    let fb = fb.unwrap();
+                    let fb = fb.borrow();
+                    println!("  {:>3},  /* {:>10} => {} */", fb.index, p.name, fb.name);
+                    match (fb.dt_num, p.dt_num) {
+                        (None, _) => {}
+                        (Some(fdt), Some(pdt)) if fdt == pdt => {}
+                        _ => {
+                            return error("Fallback token must have the same type or no type at all");
+                        }
+                    }
+                }
+            }
+        }
+        println!("];");
+
+        /* Generate the table of rule information
+         **
+         ** Note: This code depends on the fact that rules are number
+         ** sequentually beginning with 0.
+         */
+        println!("const YY_RULE_INFO: [YYCODETYPE; {}] = [", self.rules.len());
+        for rp in &self.rules {
+            let lhs = rp.borrow().lhs.unwrap();
+            let lhs = lhs.borrow();
+            println!("  {},", lhs.index);
+        }
+        println!("];");
+
+        print!("{}", include_str!("templ/t1.rs"));
+        if let Some(ref arg) = self.arg {
+            println!("    extra: {},", arg);
+        }
+        print!("{}", include_str!("templ/t2.rs"));
+        if let Some(ref arg) = self.arg {
+            println!("            extra: {},", arg);
+        }
+        print!("{}", include_str!("templ/t3.rs"));
+
+        if let Some(ref arg) = self.arg {
+            println!("    pub fn into_extra(self) -> {} {{", arg);
+            println!("        self.extra");
+            println!("    }}");
+            println!("    pub fn extra(&self) -> &{} {{", arg);
+            println!("        &self.extra");
+            println!("    }}");
+        }
+
+        print!("{}", include_str!("templ/t4.rs"));
+
+        /* Generate code which execution during each REDUCE action */
+        for rp in &self.rules {
+            let code = self.translate_code(&rp.borrow())?;
+            rp.borrow_mut().code = Some(code);
+        }
+        /* First output rules other than the default: rule */
+        for (i, rp) in self.rules.iter().enumerate() {
+           let mut rp = rp.borrow_mut();
+           {
+               let code = match rp.code {
+                   None => continue,
+                   Some(ref code) => code.trim(),
+               };
+               if code.is_empty() { continue }
+
+               print!("            {} /* ", rp.index);
+               self.write_rule_text(&rp);
+               println!(" */");
+
+               for rp2 in &self.rules[i+1..] {
+                   let mut rp2 = rp2.borrow_mut();
+                   if rp2.code == rp.code {
+                       print!("          | {} /* ", rp2.index);
+                       self.write_rule_text(&rp2);
+                       println!(" */");
+                       rp2.code = None;
+                   }
+               }
+               print!("               => ");
+               self.emit_code(&rp);
+           }
+           rp.code = None;
+        }
+
+        /* Finally, output the default: rule.  We choose as the default: all
+         ** empty actions. */
+        println!("            _ => unreachable!(),");
+
+        print!("{}", include_str!("templ/t5.rs"));
+        print!("{}", include_str!("templ/t6.rs"));
+        print!("{}", include_str!("templ/t7.rs"));
+        print!("{}", include_str!("templ/t8.rs"));
+
+        Ok(())
+    }
+
+    /*
+     ** zCode is a string that is the action associated with a rule.  Expand
+     ** the symbols in this string so that the refer to elements of the parser
+     ** stack.
+     */
+    fn translate_code(&self, rp: &Rule) -> io::Result<String> {
+        let lhs = rp.lhs.unwrap();
+        let lhs = lhs.borrow();
+        let mut code = String::new();
+        if let Some(ref dt) = lhs.data_type {
+            code += &format!("let yyres : {};\n", dt);
+        }
+        let err_sym = self.err_sym.unwrap();
+
+        for (i, r) in rp.rhs.iter().enumerate().rev() {
+            let r = r.0.unwrap();
+            let r = r.borrow();
+            let dt = match r.typ {
+                MultiTerminal(ref ss) => {
+                    let rr = ss.first().unwrap().unwrap();
+                    let dt_num = rr.borrow().dt_num;
+                    dt_num
+                }
+                _ => r.dt_num,
+            };
+            match dt {
+                Some(_) => {
+                    code += &format!("let yyp{} = self.yystack.pop().unwrap();\n", i);
+                }
+                None => {
+                    code += &format!("self.yystack.pop().unwrap();\n");
+                }
+            }
+        }
+        let mut refutable = false;
+        code += "let yyres = match (";
+        for (i, r) in rp.rhs.iter().enumerate() {
+            let r_ = r.0.unwrap();
+            let ref alias = r.1;
+            let r = r_.borrow();
+            let dt = match r.typ {
+                MultiTerminal(ref ss) => {
+                    let rr = ss.first().unwrap().unwrap();
+                    let dt_num = rr.borrow().dt_num;
+                    dt_num
+                }
+                _ => r.dt_num,
+            };
+            if !Rc::ptr_eq(&r_, &err_sym) && alias.is_some() && dt.is_some() {
+                refutable = true;
+                code += &format!("yyp{}.minor,", i);
+            }
+            match (alias, &r.typ) {
+                (Some(_), MultiTerminal(ref ss)) => {
+                    for or in &ss[1..] {
+                        let or = or.unwrap();
+                        if dt != or.borrow().dt_num {
+                            return error("Compound tokens must have all the same type");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        code += ") {\n    (";
+
+        for (i, r) in rp.rhs.iter().enumerate() {
+            let r_ = r.0.unwrap();
+            let ref alias = r.1;
+            let r = r_.borrow();
+            let dt = match r.typ {
+                MultiTerminal(ref ss) => {
+                    let rr = ss.first().unwrap().unwrap();
+                    let dt_num = rr.borrow().dt_num;
+                    dt_num
+                }
+                _ => r.dt_num,
+            };
+            if !Rc::ptr_eq(&r_, &err_sym) && alias.is_some() && dt.is_some() {
+                code += &format!("YYMinorType::YY{}(yy{}),", dt.unwrap(), i);
+            }
+        }
+        code += ") => {\n";
+
+        let rule_code = self.rule_code(&rp)?; // argument replacement
+        code += &rule_code;
+
+        if refutable {
+            code += "\n    }\n    _ => unreachable!()\n};\n";
+        } else {
+            code += "\n    }\n};\n";
+        }
+
+        match lhs.dt_num {
+            Some(ref dt) => {
+                code += &format!("YYMinorType::YY{}(yyres)\n", dt);
+            }
+            None => {
+                code += " YYMinorType::YY0\n";
+            }
+        }
+
+        Ok(code)
+    }
+
+    fn rule_code(&self, rp: &Rule) -> io::Result<String> {
+        let code = match rp.code {
+            None => "",
+            Some(ref code) => code,
+        };
+        let mut token = String::new();
+        let mut res = String::new();
+        for c in code.chars() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                token.push(c);
+            } else {
+                for (i, (_, ralias)) in rp.rhs.iter().enumerate() {
+                    if let Some(ref ralias) = ralias {
+                        if *ralias == token {
+                            res += &format!("yy{}", i);
+                            token = String::new();
+                            break;
+                        }
+                    }
+                }
+                if !token.is_empty() {
+                    res += &token;
+                    token = String::new();
+                }
+                res.push(c);
+            }
+        }
+
+        Ok(res)
+    }
+
+    fn write_rule_text(&self, rp: &Rule) {
+        let lhs = rp.lhs.unwrap();
+        let lhs = lhs.borrow();
+        print!("{} ::=", lhs.name);
+        for sp in &rp.rhs {
+            let sp = sp.0.unwrap();
+            let sp = sp.borrow();
+            match sp.typ {
+                MultiTerminal(ref ss) => {
+                    for k in ss {
+                        let k = k.unwrap();
+                        let k = k.borrow();
+                        print!("|{}", k.name);
+                    }
+                }
+                _ => {
+                    print!(" {}", sp.name);
+                }
+            }
+        }
+    }
+
+    /*
+     ** Generate code which executes when the rule "rp" is reduced.  Write
+     ** the code to "out".
+     */
+    fn emit_code(&self, rp: &Rule) {
+        /* Generate code to do the reduce action */
+        let code = match rp.code {
+            None => return,
+            Some(ref code) => code
+        };
+
+        println!("{{\n{}}}", code);
+    }
+}
