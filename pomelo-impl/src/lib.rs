@@ -6,6 +6,12 @@ extern crate syn;
 #[macro_use]
 extern crate quote;
 
+mod wrc;
+mod parser;
+mod decl;
+
+use decl::*;
+
 use quote::ToTokens;
 
 use proc_macro2::{TokenTree, TokenStream, Spacing, Delimiter, Group};
@@ -47,34 +53,21 @@ pub fn __pomelo_structs_and_impls(input: proc_macro::TokenStream) -> proc_macro:
 
     let buffer = TokenBuffer::new2(input.into_token_stream());
     let cursor = buffer.begin();
-    let (rules, cursor) = parse_pomelo(cursor).unwrap();
-    println!("RULES {:?}\nREST {}", rules, cursor.token_stream());
+    let (decls, _cursor) = parse_pomelo(cursor).unwrap();
 
-    let mut expanded = TokenStream::new();
-    if let Decl::Type(ref id, ref _ty) = rules[0] {
+    let mut lemon = parser::Lemon::new_from_decls(&decls).unwrap();
+    lemon.build().unwrap();
+
+    let expanded = TokenStream::new();
+    /*
+    if let Decl::Type(ref id, ref _ty) = decls[0] {
         expanded.extend(quote! {
             struct #id
         });
         expanded.extend(quote! {  {}; });
-    }
+    }*/
     //println!("OUT: {}", expanded);
     expanded.into()
-}
-
-#[derive(Debug)]
-enum AssocType {
-    Left, Right, None
-}
-
-#[derive(Debug)]
-enum Decl {
-    Type(Ident, Type),
-    Assoc(AssocType, Vec<Ident>),
-    Rule {
-        lhs: Ident,
-        rhs: Vec<Ident>,
-        action: Option<Group>,
-    }
 }
 
 named!{parse_declaration -> Decl,
@@ -86,35 +79,81 @@ named!{parse_declaration -> Decl,
         |
         do_parse!(
             punct!(%) >> custom_keyword!(left) >> toks: many0!(syn!(Ident)) >> punct!(;) >>
-            (Decl::Assoc(AssocType::Left, toks))
+            (Decl::Assoc(Associativity::Left, toks))
         )
         |
         do_parse!(
             punct!(%) >> custom_keyword!(right) >> toks: many0!(syn!(Ident)) >> punct!(;) >>
-            (Decl::Assoc(AssocType::Right, toks))
+            (Decl::Assoc(Associativity::Right, toks))
         )
         |
         do_parse!(
             punct!(%) >> custom_keyword!(nonassoc) >> toks: many0!(syn!(Ident)) >> punct!(;) >>
-            (Decl::Assoc(AssocType::None, toks))
+            (Decl::Assoc(Associativity::None, toks))
         )
         |
         do_parse!(
-            lhs: syn!(Ident) >>
-            punct!(->) >>
-            rhs: many0!(syn!(Ident)) >>
-            action: alt!(
-                do_parse!(
-                    punct!(=>) >>
-                    action: syn!(Group) >>
-                    (Some(action))
-                )
-                |
-                punct!(;) => { |_| None }
-            ) >>
-            (Decl::Rule { lhs, rhs, action })
+            punct!(%) >> custom_keyword!(default_type) >> typ: syn!(Type) >> punct!(;) >>
+            (Decl::DefaultType(typ))
         )
+        |
+        do_parse!(
+            punct!(%) >> custom_keyword!(start_symbol) >> id: syn!(Ident) >> punct!(;) >>
+            (Decl::StartSymbol(id))
+        )
+        |
+        do_parse!(
+            punct!(%) >> custom_keyword!(fallback) >> fallback: syn!(Ident) >> ids: many0!(syn!(Ident)) >> punct!(;) >>
+            (Decl::Fallback(fallback, ids))
+        )
+        |
+        do_parse!(
+            punct!(%) >> custom_keyword!(wildcard) >> id: syn!(Ident) >> punct!(;) >>
+            (Decl::Wildcard(id))
+        )
+        |
+        do_parse!(
+            punct!(%) >> custom_keyword!(token_class) >> tk: syn!(Ident) >> ids: many0!(syn!(Ident)) >> punct!(;) >>
+            (Decl::TokenClass(tk, ids))
+        )
+        |
+        parse_rule
     )
+}
+
+named!{parse_rule -> Decl,
+    do_parse!(
+        lhs: syn!(Ident) >>
+        punct!(->) >>
+        rhs: many0!(parse_rhs) >>
+        action: alt!(
+            do_parse!(
+                punct!(=>) >>
+                action: syn!(Group) >>
+                (Some(action))
+            )
+            |
+            punct!(;) => { |_| None }
+        ) >>
+        prec: option!(parse_precedence_in_rule) >>
+        (Decl::Rule { lhs, rhs, action, prec })
+    )
+}
+
+named!{parse_rhs -> (Vec<Ident>, Option<Ident>),
+    do_parse!(
+        toks: call!(syn::punctuated::Punctuated::<Ident, Token!(|)>::parse_separated_nonempty) >>
+        alias: option!(parse_alias) >>
+        ((toks.into_pairs().map(syn::punctuated::Pair::into_value).collect(), alias))
+    )
+}
+
+named!{parse_alias -> Ident,
+    map!(parens!(syn!(Ident)), |(_,r)| r)
+}
+
+named!{parse_precedence_in_rule -> Ident,
+    map!(brackets!(syn!(Ident)), |(_,r)| r)
 }
 
 named!{parse_pomelo -> Vec<Decl>,

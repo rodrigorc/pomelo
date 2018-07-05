@@ -23,12 +23,11 @@ mod tests {
         %type IVALUE Vec<Vec<i32>>;
         %type expr i32;
         %type FVALUE i32;
-        //%left PLUS MINUS;
+        %left PLUS MINUS;
 
-        //expr -> IVALUE|FVALUE(A) => { A }
-        //expr -> expr(A) PLUS expr(B) => { A + B }
-        expr -> LPAREN expr RPAREN;
-        expr -> LPAREN expr RPAREN => {
+        input -> expr;
+        expr -> LPAREN Expr|Foo(A) RPAREN;
+        expr ->  expr PLUS expr => {
             A + 1;
             A
         }
