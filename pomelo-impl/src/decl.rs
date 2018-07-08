@@ -1,5 +1,5 @@
 pub use syn::{Ident, Type};
-pub use proc_macro2::{Group};
+pub use proc_macro2::{Group, TokenStream};
 
 #[derive(Debug, Copy, Clone)]
 pub enum Associativity {

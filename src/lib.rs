@@ -20,21 +20,26 @@ pub enum Foo {
 mod tests {
 
     pomelo! {
-        %type IVALUE Vec<Vec<i32>>;
+        %type IValue i32;
         %type expr i32;
-        %type FVALUE i32;
-        %left PLUS MINUS;
+        %left Plus Minus;
+        //%extra_argument ();
 
-        input -> expr;
-        expr -> LPAREN Expr|Foo(A) RPAREN;
-        expr ->  expr PLUS expr => {
-            A + 1;
-            A
-        }
+        input <- expr(A) => { println!("RES = {}", A) }
+        expr <- expr(A) Plus expr(B) => { A + B }
+        expr <- expr(A) Minus expr(B) => { A - B }
+        expr <- IValue(A) => { A }
     }
 
     #[test]
     fn it_works() {
-        assert_eq!(2 + 2, 4);
+        use self::parser::*;
+        let mut p = Parser::new(());
+        p.parse(Token::IValue(2));
+        p.parse(Token::Plus);
+        p.parse(Token::IValue(4));
+        p.parse(Token::Plus);
+        p.parse(Token::IValue(7));
+        p.parse(Token::EOI);
     }
 }

@@ -7,9 +7,15 @@ use std::io;
 use std::fs;
 use std::path::Path;
 use std::cmp::{self, Ordering};
+use std::fmt;
 
 use wrc::WRc;
+use syn;
+use quote::ToTokens;
 use decl::*;
+use proc_macro2::Span;
+use syn::synom::Synom;
+use syn::buffer::{Cursor, TokenBuffer};
 
 type RuleSet = BTreeSet<usize>;
 
@@ -21,12 +27,6 @@ enum NewSymbolType {
 
 #[derive(Debug, Copy, Clone)]
 struct Precedence(i32, Associativity);
-
-impl Precedence {
-    fn get_next(&self, p: Associativity) -> Precedence {
-        Precedence(self.0 + 1, p)
-    }
-}
 
 fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 	match a.0.cmp(&b.0) {
@@ -46,7 +46,7 @@ struct Rule {
     lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
     rhs: Vec<WeakSymbolAlias>,   //RHS symbols and aliases
-    code: Option<String>,//The code executed when this rule is reduced
+    code: Option<Group>,//The code executed when this rule is reduced
     prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
     index: usize,         //An index number for this rule
     can_reduce: bool,   //True if this rule is ever reduced
@@ -72,7 +72,7 @@ struct Symbol {
     fallback: Option<WRc<RefCell<Symbol>>>, //Fallback token in case this token desn't parse
     assoc: Option<Precedence>,  //Precedence
     use_cnt: i32,               //Number of times used
-    data_type: Option<String>,  //Data type held by this object, only if NonTerminal
+    data_type: Option<Type>,  //Data type held by this object
     dt_num: Option<usize>,      //The data type number. The .yy%d element of stack is the correct data type for this object
 }
 
@@ -116,7 +116,6 @@ struct Config {
     fws: RuleSet,       //Follow-set for this configuration only
     fplp: Vec<WRc<RefCell<Config>>>,  //Follow-set forward propagation links
     bplp: Vec<WRc<RefCell<Config>>>,  //Follow-set backwards propagation links
-    //stp: Option<WRc<RefCell<State>>>,   //State which contains this (TODO is really needed)
     status: CfgStatus,  //Used during followset and shift computations
 }
 
@@ -238,7 +237,7 @@ pub struct Lemon {
     arg: Option<String>,        //Declaration of the 3rd argument to parser
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
-    var_type: Option<String>,
+    var_type: Option<Type>,
     start: Option<String>,
 }
 
@@ -246,27 +245,8 @@ pub struct Lemon {
 type SymbolAlias = (Rc<RefCell<Symbol>>, Option<String>);
 type WeakSymbolAlias = (WRc<RefCell<Symbol>>, Option<String>);
 
-enum ParserState {
-    WaitingForDeclOrRule,
-    WaitingForDeclKeyword,
-    WaitingForDeclArg(Box<Fn(&mut Lemon, String)>),
-    WaitingForPrecedenceSymbol,
-    WaitingForArrow(Rc<RefCell<Symbol>>),
-    InRhs(Rc<RefCell<Symbol>>, Vec<SymbolAlias>),
-    RhsAlias1(Rc<RefCell<Symbol>>, Vec<SymbolAlias>),
-    RhsAlias2(Rc<RefCell<Symbol>>, Vec<SymbolAlias>),
-    PrecedenceMark1,
-    PrecedenceMark2,
-    WaitingForDatatypeSymbol,
-    WaitingForFallbackId(Option<Rc<RefCell<Symbol>>>),
-    WaitingForWildcardId,
-    WaitingForClassId,
-    WaitingForClassToken(Rc<RefCell<Symbol>>),
-}
-
 struct ParserData {
-    declassoc: Precedence,
-    rules: Vec<Rc<RefCell<Rule>>>,
+    precedence: i32,
 }
 
 #[derive(Debug)]
@@ -473,22 +453,22 @@ impl ActTab {
     }
 }
 
-fn minimum_size_type(signed: bool, max: usize) -> &'static str {
+fn minimum_size_type(signed: bool, max: usize) -> Ident {
     if signed {
         if max < 0x80 {
-            "i8"
+            parse_quote!(i8)
         } else if max < 0x8000 {
-            "i16"
+            parse_quote!(i16)
         } else {
-            "i32"
+            parse_quote!(i32)
         }
     } else {
         if max < 0x100 {
-            "u8"
+            parse_quote!(u8)
         } else if max < 0x10000 {
-            "u16"
+            parse_quote!(u16)
         } else {
-            "u32"
+            parse_quote!(u32)
         }
     }
 }
@@ -505,8 +485,31 @@ fn is_lowercase(id: &Ident) -> bool {
     id.to_string().chars().next().unwrap().is_ascii_lowercase()
 }
 
+fn generate_const<T, D>(src: &mut TokenStream, name: &str, ty: T, value: D) 
+where T: fmt::Display,
+      D: fmt::Display {
+
+    let txt = format!("const {}: {} = {};", name, ty, value);
+    let expr : syn::ItemConst = syn::parse_str(&txt).unwrap();
+    src.extend(expr.into_token_stream());
+}
+
+fn generate_array<T, D, DI>(src: &mut TokenStream, name: &str, ty: T, data: D) 
+where T: fmt::Display,
+      DI: fmt::Display,
+      D: IntoIterator<Item = DI> {
+    let data = data.into_iter().collect::<Vec<_>>();
+    let mut txt = format!("static {}: [{}; {}] = [", name, ty, data.len());
+    for x in data{
+        txt += &format!("{},", x);
+    }
+    txt += "];";
+    let expr : syn::ItemStatic = syn::parse_str(&txt).unwrap();
+    src.extend(expr.into_token_stream());
+}
+
 impl Lemon {
-    pub fn new_from_decls(decls: &[Decl]) -> io::Result<Lemon> {
+    pub fn new_from_decls(decls: Vec<Decl>) -> io::Result<Lemon> {
         let mut symbols = Vec::new();
 
         Lemon::symbol_new(&mut symbols, "$", NewSymbolType::Terminal);
@@ -529,19 +532,17 @@ impl Lemon {
         };
 
         let mut pdata = ParserData {
-            declassoc: Precedence(0, Associativity::Left),
-            rules: Vec::new(),
+            precedence: 0,
         };
 
-        for decl in decls {
+        for decl in decls.into_iter() {
             lem.parse_one_decl(&mut pdata, decl)?;
         }
-        lem.rules = pdata.rules;
 
         Lemon::symbol_new(&mut lem.symbols, "{default}", NewSymbolType::NonTerminal);
         Ok(lem)
     }
-    pub fn build(&mut self) -> io::Result<()> {
+    pub fn build(&mut self) -> io::Result<TokenStream> {
         println!("--> prepare");
         self.prepare();
         println!("--> find rule prec");
@@ -561,14 +562,14 @@ impl Lemon {
         self.compress_tables();
         println!("--> resort ");
         self.resort_states();
-        //self.report_output();
+        self._report_output();
 
         println!("--> generate ");
-        self.generate_source()?;
+        let src = self.generate_source()?;
 
         //println!("{:?}", self);
         //println!("nsymbol={}, nterminal={}", self.nsymbol, self.nterminal);
-        Ok(())
+        Ok(src)
     }
 
     pub fn prepare(&mut self) {
@@ -1545,166 +1546,60 @@ impl Lemon {
         (b.n_nt_act, b.n_tkn_act, b.state_num).cmp(&(a.n_nt_act, a.n_tkn_act, a.state_num))
     }
 
-    /* In spite of its name, this function is really a scanner.  It read
-     * in the entire input file (all at once) then tokenizes it.  Each
-     * token is passed to the function "parseonetoken" which builds all
-     * the appropriate data structures in the global state vector "self".
-     */
-    fn parse(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
-        let mut buf = fs::read(path)?;
-        buf.push(0);
-        let mut lineno = 1;
-        let mut i = 0;
-        let mut pst = ParserState::WaitingForDeclOrRule;
-        let mut pdata = ParserData {
-            declassoc: Precedence(0, Associativity::Left),
-            rules: Vec::new(),
-        };
-        while i < buf.len() - 1 {
-            //Keep track of the line number
-            if buf[i] == b'\n' {
-                lineno += 1;
-            }
-            //Skip all white space
-            if buf[i].is_ascii_whitespace() {
-                i += 1;
-                continue;
-            }
-            //Skip C++ style comments
-            if buf[i] == b'/' && buf[i+1] == b'/' {
-                i += 2;
-                while buf[i] != 0 && buf[i] != b'\n' {
-                    i += 1;
-                }
-                continue;
-            }
-            //Skip C style comments
-            if buf[i] == b'/' && buf[i+1] == b'*' {
-                i += 2;
-                while buf[i] != 0 && (buf[i] != b'/' || buf[i-1] != b'*') {
-                    if buf[i] == b'\n' {
-                        lineno += 1;
-                    }
-                    i += i;
-                }
-                if buf[i] != 0 {
-                    i += 1;
-                }
-                continue;
-            }
-            //Mark the beginning of the token
-            let tokenstart = i;
-            let _tokenlineno = lineno;
-            match buf[i] {
-                //String literals
-                b'"' => {
-                    i += 1;
-                    while buf[i] != 0 && buf[i] != b'"' {
-                        if buf[i] == b'\n' {
-                            lineno += 1;
-                        }
-                        i += i;
-                    }
-                    if buf[i] == 0 {
-                        return error("String starting on this line is not terminated before the end of the file.");
-                    }
-                    i += 1;
-                }
-                //A block of code
-                b'{' => {
-                    i += 1;
-                    let mut nesting = 1;
-                    while buf[i] != 0 && nesting > 0 {
-                        match buf[i] {
-                            b'}' => nesting -= 1,
-                            b'{' => nesting += 1,
-                            _ => ()
-                        }
-                        i += 1;
-                    }
-                }
-                //Identifiers
-                c if c.is_ascii_alphanumeric() => {
-                    while buf[i] != 0 && (buf[i].is_ascii_alphanumeric() || buf[i] == b'_') {
-                        i += 1;
-                    }
-                }
-                //The operator "::="
-                b':' if buf[i+1] == b':' && buf[i+2] == b'=' => {
-                    i += 3;
-                }
-                //Multiterminal
-                b'/' | b'|' if buf[i+1].is_ascii_alphabetic() => {
-                    i += 2;
-                    while buf[i] != 0 && (buf[i].is_ascii_alphanumeric() || buf[i] == b'_') {
-                        i += 1;
-                    }
-                }
-                //All other (one character) operators
-                _ => {
-                    i += 1;
-                }
-            }
-            pst = self.parse_one_token(pst, &mut pdata, &buf[tokenstart..i])?;
-        }
-        self.rules = pdata.rules;
-        Ok(())
-    }
-
-    fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: &Decl) -> io::Result<()> {
-        println!("PARSE {:?}", decl);
+    fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: Decl) -> io::Result<()> {
+        //println!("PARSE {:?}", decl);
         match decl {
-            Decl::Type(id, _ty) => {
-                let nst = if is_uppercase(id) {
+            Decl::Type(id, ty) => {
+                let nst = if is_uppercase(&id) {
                     NewSymbolType::Terminal
-                } else if is_lowercase(id) {
+                } else if is_lowercase(&id) {
                     NewSymbolType::NonTerminal
                 } else {
                     return error("Symbol name missing");
                 };
-                let sp = self.symbol_new_t(id, nst).unwrap();
+                let sp = self.symbol_new_t(&id, nst).unwrap();
                 let mut sp = sp.borrow_mut();
                 if sp.data_type.is_some() {
                     return error("Symbol type already defined");
                 }
-                sp.data_type = Some("ty".to_string()); //TODO Type
+                sp.data_type = Some(ty);
             }
             Decl::Assoc(a, ids) => {
-                pdt.declassoc = pdt.declassoc.get_next(*a);
+                pdt.precedence += 1;
                 for token in ids {
-                    if !is_uppercase(token) {
+                    if !is_uppercase(&token) {
                         return error("Precedence must be assigned to a token");
                     }
-                    let sp = self.symbol_new_t(token, NewSymbolType::Terminal).unwrap();
+                    let sp = self.symbol_new_t(&token, NewSymbolType::Terminal).unwrap();
                     let mut b = sp.borrow_mut();
                     match b.assoc {
                         Some(_) => return error("Symbol has already been given a precedence"),
-                        None => b.assoc = Some(pdt.declassoc),
+                        None => b.assoc = Some(Precedence(pdt.precedence, a)),
                     }
                 }
             }
-            Decl::DefaultType(_ty) => {
+            Decl::DefaultType(ty) => {
                 if self.var_type.is_some() {
                     return error("Default type already defined");
                 }
-                self.var_type = Some("ty".to_string()); //TODO Type
+                self.var_type = Some(ty);
             }
-            Decl::StartSymbol(_id) => {
+            Decl::StartSymbol(id) => {
                 if self.start.is_some() {
                     return error("Start symbol already defined");
                 }
-                self.start = Some("id".to_string()); //TODO Ident
+                self.start = Some(id.to_string());
             }
             Decl::Fallback(fb, ids) => {
-                    if !is_uppercase(fb) {
+                    if !is_uppercase(&fb) {
                         return error("Fallback must be a token");
                     }
-                let fallback = self.symbol_new_t(fb, NewSymbolType::Terminal);
+                let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
                 for id in ids {
-                    if !is_uppercase(fb) {
+                    if !is_uppercase(&fb) {
                         return error("Fallback must be a token");
                     }
-                    let sp = self.symbol_new_t(id, NewSymbolType::Terminal).unwrap();
+                    let sp = self.symbol_new_t(&id, NewSymbolType::Terminal).unwrap();
                     let mut b = sp.borrow_mut();
                     if b.fallback.is_some() {
                         return error("More than one fallback assigned to token");
@@ -1717,28 +1612,28 @@ impl Lemon {
                 if self.wildcard.is_some() {
                     return error("Wildcard already defined");
                 }
-                if !is_uppercase(id) {
+                if !is_uppercase(&id) {
                     return error("Wildcard must be a token");
                 }
-                let sp = self.symbol_new_t(id, NewSymbolType::Terminal);
+                let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                 self.wildcard = Some(sp);
             }
             Decl::TokenClass(tk, ids) => {
-                let tk = self.symbol_new_t(tk, NewSymbolType::MultiTerminal).unwrap();
+                let tk = self.symbol_new_t(&tk, NewSymbolType::MultiTerminal).unwrap();
                 if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
                     for id in ids {
-                        let sp = self.symbol_new_t(id, NewSymbolType::Terminal);
+                        let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                         sub_sym.push(sp.into());
                     }
                 } else {
                     unreachable!();
                 };
             }
-            Decl::Rule{ lhs, rhs, action: _action, prec } => {
-                if !is_lowercase(lhs) {
+            Decl::Rule{ lhs, rhs, action, prec } => {
+                if !is_lowercase(&lhs) {
                     return error("LHS of rule must be non-terminal");
                 }
-                let lhs = self.symbol_new_t(lhs, NewSymbolType::NonTerminal);
+                let lhs = self.symbol_new_t(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, alias)| {
                     let tok = if toks.len() == 1 {
                         let tok = toks.into_iter().next().unwrap();
@@ -1754,10 +1649,10 @@ impl Lemon {
                         let mt = self.symbol_new_b(b"", NewSymbolType::MultiTerminal).unwrap();
                         let mut ss = Vec::new();
                         for tok in toks {
-                            if !is_uppercase(tok) {
+                            if !is_uppercase(&tok) {
                                 return error("Cannot form a compound containing a non-terminal");
                             }
-                            ss.push(self.symbol_new_t(tok, NewSymbolType::Terminal));
+                            ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                         }
                         if let MultiTerminal(ref mut sub_sym) = mt.borrow_mut().typ {
                             sub_sym.extend(ss);
@@ -1780,12 +1675,12 @@ impl Lemon {
                     None => None
                 };
 
-                let index = pdt.rules.len();
+                let index = self.rules.len();
                 let rule = Rule {
                     lhs: lhs.clone(),
                     lhs_start: false,
                     rhs,
-                    code: Some("gr".to_string()), //TODO Group
+                    code: action,
                     prec_sym,
                     index,
                     can_reduce: false,
@@ -1797,347 +1692,42 @@ impl Lemon {
                 } else {
                     unreachable!();
                 }
-                pdt.rules.push(rule);
+                self.rules.push(rule);
             }
         }
         Ok(())
     }
-    fn parse_one_token(&mut self, pst: ParserState, pdt: &mut ParserData, token: &[u8]) -> io::Result<ParserState> {
-        use self::ParserState::*;
 
-        let new_pst = match pst {
-            WaitingForDeclOrRule if token[0] == b'%' => {
-                WaitingForDeclKeyword
-            }
-            WaitingForDeclOrRule if token[0].is_ascii_lowercase() => {
-                let sym = self.symbol_new_b(token, NewSymbolType::NonTerminal);
-                WaitingForArrow(sym.unwrap())
-            }
-            WaitingForDeclOrRule if token[0] == b'{' => {
-                let mut rule = match pdt.rules.last_mut() {
-                    Some(r) => r.borrow_mut(),
-                    _ => return error("There is no prior rule to attach code"),
-                };
-                if rule.code.is_some() {
-                    return error("Code framgent is not the first");
-                }
-                rule.code = Some(String::from_utf8_lossy(token).into_owned());
-                WaitingForDeclOrRule
-            }
-            WaitingForDeclOrRule if token[0] == b'[' => {
-                PrecedenceMark1
-            }
-            WaitingForDeclOrRule => {
-                return error("Token should be % or a nonterminal name");
-            }
-
-            PrecedenceMark1 if token[0].is_ascii_uppercase() => {
-                let mut rule = match pdt.rules.last_mut() {
-                    Some(r) => r.borrow_mut(),
-                    _ => return error("There is no prior rule to attach code"),
-                };
-                if rule.prec_sym.is_some() {
-                    return error("Assoc mark is not the first");
-                }
-                rule.prec_sym = Some(self.symbol_new_b(token, NewSymbolType::Terminal));
-                PrecedenceMark2
-            }
-            PrecedenceMark1 => {
-                return error("The precedence symbol must be a terminal");
-            }
-
-            PrecedenceMark2 if token == b"]" => {
-                WaitingForDeclOrRule
-            }
-            PrecedenceMark2 => {
-                return error("Missing ] on precedence mark");
-            }
-
-            WaitingForArrow(lhs) => {
-                if token == b"::=" {
-                    InRhs(lhs, Vec::new())
-                } else {
-                    return error("Expected a ::= following the LHS symbol");
-                }
-            }
-
-            InRhs(lhs, mut rhs) => {
-                if token == b"." {
-                    let rhs = rhs.into_iter().map(|(r,a)| (r.into(), a)).collect::<Vec<_>>();
-                    let index = pdt.rules.len();
-                    let rule = Rule {
-                        lhs: (&lhs).into(),
-                        lhs_start: false,
-                        rhs,
-                        code: None,
-                        prec_sym: None,
-                        index,
-                        can_reduce: false,
-                    };
-                    let rule = Rc::new(RefCell::new(rule));
-                    if let NonTerminal{ref mut rules, ..} = lhs.borrow_mut().typ {
-                        rules.push((&rule).into());
-                    }
-                    pdt.rules.push(rule);
-                    WaitingForDeclOrRule
-                } else if token[0].is_ascii_lowercase() {
-                    let token = self.symbol_new_b(token, NewSymbolType::NonTerminal);
-                    rhs.push((token.unwrap(), None));
-                    InRhs(lhs, rhs)
-                } else if token[0].is_ascii_uppercase() {
-                    let token = self.symbol_new_b(token, NewSymbolType::Terminal);
-                    rhs.push((token.unwrap(), None));
-                    InRhs(lhs, rhs)
-                } else if token[0] == b'|' || token[0] == b'/' {
-                    if !token[1].is_ascii_uppercase() {
-                        return error("Cannot form a compound containing a non-terminal");
-                    }
-                    let s2 = self.symbol_new_b(&token[1..], NewSymbolType::Terminal);
-
-                    let msp = rhs.last().unwrap().0.clone();
-                    let mut msp = msp.borrow_mut();
-                    match msp.typ {
-                        MultiTerminal(ref mut sub_sym) => {
-                            sub_sym.push(s2.into());
-                        }
-                        NonTerminal{..} => {
-                            return error("Cannot form a compound containing a non-terminal");
-                        }
-                        Terminal => {
-                            let s = self.symbol_new_b(b"", NewSymbolType::MultiTerminal).unwrap();
-                            let (orig, alias) = rhs.pop().unwrap();
-                            if let MultiTerminal(ref mut sub_sym) = s.borrow_mut().typ {
-                                sub_sym.push(orig.into());
-                                sub_sym.push(s2.into());
-                            };
-                            rhs.push((s.into(), alias));
-                        }
-                    };
-                    InRhs(lhs, rhs)
-                } else if token == b"(" {
-                    RhsAlias1(lhs, rhs)
-                } else {
-                    return error("Illegal character on RHS of rule");
-                }
-            }
-
-            RhsAlias1(lhs, mut rhs) => {
-                if token[0].is_ascii_alphabetic() {
-                    let token = String::from_utf8_lossy(token).into_owned();
-                    let r = match rhs.pop() {
-                        Some((x, None)) => (x, Some(token)),
-                        _ => return error("Invalid alias"),
-                    };
-                    rhs.push(r);
-                    RhsAlias2(lhs, rhs)
-                } else {
-                    return error("Invalid alias for RHS symbol");
-                }
-            }
-
-            RhsAlias2(lhs, rhs) => {
-                if token == b")" {
-                    InRhs(lhs, rhs)
-                } else {
-                    return error("Missing ) following RHS alias");
-                }
-            }
-
-            WaitingForDeclKeyword if token[0].is_ascii_alphabetic() => {
-                match token {
-                    b"include" |
-                    b"derive_token" |
-                    b"code" |
-                    b"syntax_error" |
-                    b"parse_accept" |
-                    b"parse_failure" |
-                    b"stack_size" |
-                    b"stack_overflow" => {
-                        WaitingForDeclArg(Box::new(|_l, _s| ()))
-                    }
-                    b"extra_argument" => {
-                        WaitingForDeclArg(Box::new(|l, s| l.arg = Some(s)))
-                    }
-                    b"default_type" => {
-                        WaitingForDeclArg(Box::new(|l, s| l.var_type = Some(s)))
-                    }
-                    b"start_symbol" => {
-                        WaitingForDeclArg(Box::new(|l, s| l.start = Some(s)))
-                    }
-                    b"left" => {
-                        pdt.declassoc = pdt.declassoc.get_next(Associativity::Left);
-                        WaitingForPrecedenceSymbol
-                    }
-                    b"right" => {
-                        pdt.declassoc = pdt.declassoc.get_next(Associativity::Right);
-                        WaitingForPrecedenceSymbol
-                    }
-                    b"nonassoc" => {
-                        pdt.declassoc = pdt.declassoc.get_next(Associativity::None);
-                        WaitingForPrecedenceSymbol
-                    }
-                    b"type" => {
-                        WaitingForDatatypeSymbol
-                    }
-
-                    b"fallback" => {
-                        WaitingForFallbackId(None)
-                    }
-                    b"wildcard" => {
-                        WaitingForWildcardId
-                    }
-                    b"token_class" => {
-                        WaitingForClassId
-                    }
-                    _ => {
-                        return error("unknown declaration keyword");
-                    }
-                }
-            }
-            WaitingForDeclKeyword => {
-                return error("Illegal declaration keyword");
-            }
-
-            WaitingForDatatypeSymbol => {
-                let nst = if token[0].is_ascii_uppercase() {
-                    NewSymbolType::Terminal
-                } else if token[0].is_ascii_lowercase() {
-                    NewSymbolType::NonTerminal
-                } else {
-                    return error("Symbol name missing");
-                };
-                let sp = self.symbol_new_b(token, nst).unwrap();
-                WaitingForDeclArg(Box::new(move |_l, s| {
-                    sp.borrow_mut().data_type = Some(s);
-                }))
-            }
-
-            WaitingForPrecedenceSymbol if token == b"." => {
-                WaitingForDeclOrRule
-            }
-            WaitingForPrecedenceSymbol if token[0].is_ascii_uppercase() => {
-                let sp = self.symbol_new_b(token, NewSymbolType::Terminal).unwrap();
-                let mut b = sp.borrow_mut();
-                match b.assoc {
-                    Some(_) => return error("Symbol has already been given a precedence"),
-                    None => b.assoc = Some(pdt.declassoc),
-                }
-                WaitingForPrecedenceSymbol
-            }
-            WaitingForPrecedenceSymbol => {
-                return error("Can't assign precedence to this");
-            }
-
-            WaitingForDeclArg(declargslot) => {
-                if token[0] == b'{' || token[0] == b'"' || token[0].is_ascii_alphanumeric() {
-                    let token = match token[0] {
-                        b'{' | b'"' => &token[1..token.len()-2],
-                        _ => &token
-                    };
-                    let token = String::from_utf8_lossy(token).trim().to_string();
-                    declargslot(self, token);
-                    WaitingForDeclOrRule
-                } else {
-                    return error("Illegal argument");
-                }
-            }
-
-            WaitingForFallbackId(fallback) => {
-                if token == b"." {
-                    WaitingForDeclOrRule
-                } else if token[0].is_ascii_uppercase() {
-                    let sp = self.symbol_new_b(token, NewSymbolType::Terminal);
-                    let fallback = match fallback {
-                        None => Some(sp.unwrap()),
-                        Some(fb) => {
-                            let sp = sp.unwrap();
-                            let mut b = sp.borrow_mut();
-                            if b.fallback.is_some() {
-                                return error("More than one fallback assigned to token");
-                            }
-                            b.fallback = Some((&fb).into());
-                            self.has_fallback = true;
-                            Some(fb)
-                        }
-                    };
-                    WaitingForFallbackId(fallback)
-                } else {
-                    return error("Fallback argument should be a token");
-                }
-            }
-
-            WaitingForWildcardId if token == b"." => {
-                WaitingForDeclOrRule
-            }
-            WaitingForWildcardId if token[0].is_ascii_uppercase() => {
-                let sp = self.symbol_new_b(token, NewSymbolType::Terminal);
-                if self.wildcard.is_some() {
-                    return error("Extra wildcard");
-                }
-                self.wildcard = Some(sp);
-                WaitingForWildcardId
-            }
-            WaitingForWildcardId => {
-                return error("Wildcard argument should be a token");
-            }
-
-            WaitingForClassId if token[0].is_ascii_lowercase() => {
-                let sp = self.symbol_new_b(token, NewSymbolType::MultiTerminal);
-                WaitingForClassToken(sp.unwrap())
-            }
-            WaitingForClassId => {
-                return error("token_class must be followed by an identifier");
-            }
-
-            WaitingForClassToken(_) if token == b"." => {
-                WaitingForDeclOrRule
-            }
-            WaitingForClassToken(tkclass) => {
-                if token[0].is_ascii_uppercase() {
-                    if let MultiTerminal(ref mut sub_sym) = tkclass.borrow_mut().typ {
-                        let sp = self.symbol_new_b(token, NewSymbolType::Terminal);
-                        sub_sym.push(sp.into());
-                    }
-                    WaitingForClassToken(tkclass.clone())
-                } else if (token[0] == b'|' || token[0] == b'/') && token.len() > 1 && token[1].is_ascii_uppercase() {
-                    if let MultiTerminal(ref mut sub_sym) = tkclass.borrow_mut().typ {
-                        let sp = self.symbol_new_b(&token[1..], NewSymbolType::Terminal);
-                        sub_sym.push(sp.into());
-                    } else {
-                        assert!(false);
-                    }
-                    WaitingForClassToken(tkclass.clone())
-                } else {
-                    return error("token_class argument should be a token");
-                }
-            }
-        };
-
-        Ok(new_pst)
-    }
-
-    fn generate_source(&self) -> io::Result<()> {
-        //println!("----------------------------------------------------");
-        println!("#![allow(dead_code)]");
-        println!("#![allow(unused_variables)]");
-        print!("{}", include_str!("templ/t0.rs"));
+    fn generate_source(&self) -> io::Result<TokenStream> {
+        let mut src = TokenStream::new();
+        src.extend(quote!{
+            #![allow(dead_code)]
+            #![allow(unused_variables)]
+        });
+        //include_str!("templ/t0.rs")
         /* Generate the defines */
-        println!("type YYCODETYPE = {};", minimum_size_type(true, self.nsymbol+1));
-        println!("const YYNOCODE: i32 = {};", self.nsymbol + 1);
-        println!("type YYACTIONTYPE = {};", minimum_size_type(false, self.states.len() + self.rules.len() + 5));
 
-        if let Some(ref wildcard) = self.wildcard {
+        let yycodetype = minimum_size_type(true, self.nsymbol+1);
+        let yyactiontype = minimum_size_type(false, self.states.len() + self.rules.len() + 5);
+        src.extend(quote!{
+            type YYCODETYPE = #yycodetype;
+            type YYACTIONTYPE = #yyactiontype;
+        });
+
+        generate_const(&mut src, "YYNOCODE", "i32", self.nsymbol + 1);
+
+        let yywildcard = if let Some(ref wildcard) = self.wildcard {
             let wildcard = wildcard.unwrap();
             let wildcard = wildcard.borrow();
             if wildcard.data_type.is_some() {
                 return error("Wildcard token must not have a type");
             }
-            println!("const YYWILDCARD: YYCODETYPE = {};", wildcard.index);
-
+            wildcard.index
         } else {
-            println!("const YYWILDCARD: YYCODETYPE = 0;");
-        }
+            0
+        };
 
+        generate_const(&mut src, "YYWILDCARD", "YYCODETYPE", yywildcard);
         /*
          ** Print the definition of the union used for the parser's data stack.
          ** This union contains fields for every possible data type for tokens
@@ -2165,38 +1755,42 @@ impl Lemon {
                 sp.dt_num = None;
                 continue;
             }
-            let cp = sp.data_type.as_ref().or(self.var_type.as_ref()).map(|x| x.to_string());
-            let cp = match cp {
-                None => {
-                    sp.dt_num = None;
-                    continue;
+
+            sp.dt_num = {
+                let cp = sp.data_type.as_ref().or(self.var_type.as_ref());
+                match cp {
+                    None => None,
+                    Some(cp) => {
+                        let next = types.len() + 1;
+                        Some(*types.entry(cp.clone()).or_insert(next))
+                    }
                 }
-                Some(cp) => cp
             };
-            let next = types.len() + 1;
-            sp.dt_num = Some(*types.entry(cp).or_insert(next));
         }
 
         /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
-        println!("enum YYMinorType {{");
-        println!("    YY0,");
+        let mut yyminortype_str = String::from("enum YYMinorType { YY0,");
         for (k, v) in &types {
-            println!("    YY{}({}),", v, k);
+            yyminortype_str += &format!("YY{}({}),", v, k.into_token_stream());
         }
-        println!("}}");
+        yyminortype_str += "}";
+        let yyminortype_enum : syn::ItemEnum = syn::parse_str(&yyminortype_str).unwrap();
+        src.extend(yyminortype_enum.into_token_stream());
 
-        println!("const YYNSTATE: i32 = {};", self.states.len());
-        println!("const YYNRULE: i32 = {};", self.rules.len());
+        generate_const(&mut src, "YYNSTATE", "i32", self.states.len());
+        generate_const(&mut src, "YYNRULE", "i32", self.rules.len());
 
         {
             let err_sym = self.err_sym.unwrap();
             let mut err_sym = err_sym.borrow_mut();
             err_sym.dt_num = Some(types.len() + 1);
-            if err_sym.use_cnt > 0 {
-                println!("const YYERRORSYMBOL: i32 = {};", err_sym.index);
+
+            let yyerrorsymbol = if err_sym.use_cnt > 0 {
+                err_sym.index as i32
             } else {
-                println!("const YYERRORSYMBOL: i32 = 0;");
-            }
+                0
+            };
+            generate_const(&mut src, "YYERRORSYMBOL", "i32", yyerrorsymbol);
         }
 
         /* Generate the action table and its associates:
@@ -2244,7 +1838,6 @@ impl Lemon {
             let mut actset = ActionSet::new();
 
             if a.n_action == 0 { continue }
-            //println!("action {} {}", a.n_action, a.stp.borrow().state_num);
             if a.is_tkn {
                 for ap in &a.stp.borrow().ap {
                     let ap = ap.borrow();
@@ -2256,7 +1849,6 @@ impl Lemon {
                         Some(action) => actset.add_action(sp.index, action),
                     }
                 }
-                //println!("ST TE {}", a.stp.borrow().state_num);
                 let ofs = acttab.insert_action_set(&actset);
                 let mut stp = a.stp.borrow_mut();
                 stp.i_tkn_ofst = Some(ofs);
@@ -2274,7 +1866,6 @@ impl Lemon {
                         Some(action) => actset.add_action(sp.index, action),
                     }
                 }
-                //println!("ST NT {}", a.stp.borrow().state_num);
                 let ofs = acttab.insert_action_set(&actset);
                 let mut stp = a.stp.borrow_mut();
                 stp.i_nt_ofst = Some(ofs);
@@ -2284,271 +1875,381 @@ impl Lemon {
         }
         /* Output the yy_action table */
         //TODO derive
-        println!("pub enum Token {{");
-        println!("    EOI, //0");
+        let mut yytoken : syn::ItemEnum = parse_quote!{
+            pub enum Token {
+                EOI,
+            }
+        };
+
+        let yytoken_span = yytoken.variants.first().unwrap().value().ident.span();
+
         for i in 1 .. self.nterminal {
             let ref s = self.symbols[i];
             let s = s.borrow();
-            match s.data_type {
+            let dt = match s.data_type {
                 Some(ref dt) => {
-                    println!("    {}({}), //{}", s.name, dt.trim(), i)
+                    syn::Fields::Unnamed( parse_quote!{ (#dt) })
                 }
                 None => {
-                    println!("    {}, //{}", s.name, i);
+                    syn::Fields::Unit
                 }
-            }
+            };
+            yytoken.variants.push(syn::Variant {
+                attrs: vec![],
+                ident: Ident::new(&s.name, yytoken_span),
+                fields: dt,
+                discriminant: None,
+            });
         }
-        println!("}}");
-        println!("pub const TOKEN_EOI: i32 = 0;");
-        for i in 1..self.nterminal {
-            println!("pub const TOKEN_{}: i32 = {};", self.symbols[i].borrow().name, i);
-        }
+        src.extend(yytoken.into_token_stream());
 
-        println!("#[inline]");
-        println!("fn token_value(t: Token) -> (i32, YYMinorType) {{");
-        println!("    match t {{");
-        println!("        Token::EOI => (0, YYMinorType::YY0),");
+        let mut yytoken_str = String::from("
+            #[inline]
+            fn token_value(t: Token) -> (i32, YYMinorType) {
+                match t {
+                    Token::EOI => (0, YYMinorType::YY0),");
         for i in 1 .. self.nterminal {
             let s = self.symbols[i].borrow();
             match s.dt_num {
                 Some(dt) => {
-                    println!("        Token::{}(x) => ({}, YYMinorType::YY{}(x)),", s.name, i, dt);
+                    yytoken_str += &format!("Token::{}(x) => ({}, YYMinorType::YY{}(x)),", s.name, i, dt);
                 }
                 None => {
-                    println!("        Token::{} => ({}, YYMinorType::YY0),", s.name, i);
+                    yytoken_str += &format!("Token::{} => ({}, YYMinorType::YY0),", s.name, i);
                 }
             }
         }
-        println!("    }}");
-        println!("}}");
+        yytoken_str += "
+                }
+            }";
+        let yytoken_fn : syn::ItemFn = syn::parse_str(&yytoken_str).unwrap();
+        src.extend(yytoken_fn.into_token_stream());
 
         /* Return the number of entries in the yy_action table */
-        let n = acttab.a_action.len();
-        println!("const YY_ACTTAB_COUNT: i32 = {};", n);
-        println!("const YY_ACTION: [YYACTIONTYPE; {}] = [", n);
-        let mut j = 0;
-        for (i, ac) in acttab.a_action.iter().enumerate() {
-            let action = match ac {
-                None => self.states.len() + self.rules.len() + 2,
-                Some(a) => a.action,
-            };
-            if j==0 {
-                print!(" /* {:>5} */ ", i);
-            }
-            print!(" {:>4},", action);
-            if j == 9 || i == n - 1 {
-                println!();
-                j = 0;
-            } else {
-                j += 1;
-            }
-        }
-        println!("];");
+        generate_const(&mut src, "YY_ACTTAB_COUNT", "i32", acttab.a_action.len());
+        generate_array(&mut src, "YY_ACTION", &yyactiontype,
+            acttab.a_action.iter().map(|ac| {
+                match ac {
+                    None => self.states.len() + self.rules.len() + 2,
+                    Some(a) => a.action,
+                }
+            })
+        );
 
         /* Output the yy_lookahead table */
-        println!("const YY_LOOKAHEAD: [YYCODETYPE; {}] = [", n);
-        let mut j = 0;
-        for (i, ac) in acttab.a_action.iter().enumerate() {
-            let la = match ac {
-                None => self.nsymbol,
-                Some(a) => a.lookahead,
-            };
-            if j==0 {
-                print!(" /* {:>5} */ ", i);
-            }
-            print!(" {:>4},", la);
-            if j == 9 || i == n - 1 {
-                println!();
-                j = 0;
-            } else {
-                j += 1;
-            }
-        }
-        println!("];");
+        generate_array(&mut src, "YY_LOOKAHEAD", &yycodetype,
+            acttab.a_action.iter().map(|ac| {
+                match ac {
+                    None => self.nsymbol,
+                    Some(a) => a.lookahead,
+                }
+            })
+        );
 
         /* Output the yy_shift_ofst[] table */
-        println!("const YY_SHIFT_USE_DFLT: i32 = {};", min_tkn_ofst - 1);
         let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
                         st.borrow().i_tkn_ofst.is_some()
                     ).unwrap();
-        println!("const YY_SHIFT_COUNT: i32 = {};", n);
-        println!("const YY_SHIFT_MIN: i32 = {};", min_tkn_ofst);
-        println!("const YY_SHIFT_MAX: i32 = {};", max_tkn_ofst);
-        let n = n + 1;
-        println!("const YY_SHIFT_OFST: [{}; {}] = [",
-                minimum_size_type(true, max_tkn_ofst as usize), n);
-        let mut j = 0;
-        for i in 0 .. n {
-            let ref stp = self.states[i];
-            let stp = stp.borrow();
-            let ofst = stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1);
-            if j == 0 {
-                print!(" /* {:>5} */ ", i);
-            }
-            print!(" {:>4},", ofst);
-            if j == 9 || i == n - 1 {
-                println!();
-                j = 0;
-            } else {
-                j += 1;
-            }
-        }
-        println!("];");
+        generate_const(&mut src, "YY_SHIFT_USE_DFLT", "i32", min_tkn_ofst - 1);
+        generate_const(&mut src, "YY_SHIFT_COUNT", "i32", n);
+        generate_const(&mut src, "YY_SHIFT_MIN", "i32", min_tkn_ofst);
+        generate_const(&mut src, "YY_SHIFT_MAX", "i32", max_tkn_ofst);
+        generate_array(&mut src, "YY_SHIFT_OFST", minimum_size_type(true, max_tkn_ofst as usize),
+            self.states[0..=n].iter().map(|stp| {
+                let stp = stp.borrow();
+                let ofst = stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1);
+                ofst
+            })
+        );
 
         /* Output the yy_reduce_ofst[] table */
-        println!("const YY_REDUCE_USE_DFLT: i32 = {};", min_nt_ofst - 1);
         let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
                         st.borrow().i_nt_ofst.is_some()
                     ).unwrap();
-        println!("const YY_REDUCE_COUNT: i32 = {};", n);
-        println!("const YY_REDUCE_MIN: i32 = {};", min_nt_ofst);
-        println!("const YY_REDUCE_MAX: i32 = {};", max_nt_ofst);
-        let n = n + 1;
-        println!("const YY_REDUCE_OFST: [{}; {}] = [",
-                minimum_size_type(true, max_nt_ofst as usize), n);
-        let mut j = 0;
-        for i in 0 .. n {
-            let ref stp = self.states[i];
-            let stp = stp.borrow();
-            let ofst = stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1);
-            if j == 0 {
-                print!(" /* {:>5} */ ", i);
-            }
-            print!(" {:>4},", ofst);
-            if j == 9 || i == n - 1 {
-                println!();
-                j = 0;
-            } else {
-                j += 1;
-            }
-        }
-        println!("];");
+        generate_const(&mut src, "YY_REDUCE_USE_DFLT", "i32", min_nt_ofst - 1);
+        generate_const(&mut src, "YY_REDUCE_COUNT", "i32", n);
+        generate_const(&mut src, "YY_REDUCE_MIN", "i32", min_nt_ofst);
+        generate_const(&mut src, "YY_REDUCE_MAX", "i32", max_nt_ofst);
+        generate_array(&mut src, "YY_REDUCE_OFST", minimum_size_type(true, max_nt_ofst as usize),
+            self.states[0..=n].iter().map(|stp| {
+                let stp = stp.borrow();
+                let ofst = stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1);
+                ofst
+            })
+        );
 
-        /* Output the default action table */
-        let n = self.states.len();
-        println!("const YY_DEFAULT: [YYACTIONTYPE; {}] = [", n);
-        for i in 0 .. n {
-            let ref stp = self.states[i];
-            let stp = stp.borrow();
-            if j == 0 {
-                print!(" /* {:>5} */ ", i);
-            }
-            print!(" {:>4},", stp.i_dflt);
-            if j == 9 || i == n - 1 {
-                println!();
-                j = 0;
-            } else {
-                j += 1;
-            }
-        }
-        println!("];");
+        generate_array(&mut src, "YY_DEFAULT", &yyactiontype,
+            self.states.iter().map(|stp| {
+                let stp = stp.borrow();
+                stp.i_dflt
+            })
+        );
 
         /* Generate the table of fallback tokens. */
         let mx = self.symbols.iter().enumerate().rfind(|(_,sy)|
                         sy.borrow().fallback.is_some()
-                    ).map(|(x,_)| x + 1).unwrap_or(0); //TODO check if there is any
-        println!("const YY_FALLBACK: [i32; {}] = [", mx);
-        for i in 0 .. mx {
-            let ref p = self.symbols[i];
-            let p = p.borrow();
-            match p.fallback {
-                None => {
-                    println!("    0,  /* {:>10} => nothing */", p.name);
-                }
-                Some(ref fb) => {
-                    let fb = fb.unwrap();
-                    let fb = fb.borrow();
-                    println!("  {:>3},  /* {:>10} => {} */", fb.index, p.name, fb.name);
-                    match (fb.dt_num, p.dt_num) {
-                        (None, _) => {}
-                        (Some(fdt), Some(pdt)) if fdt == pdt => {}
-                        _ => {
-                            return error("Fallback token must have the same type or no type at all");
+                    ).map(|(x,_)| x + 1).unwrap_or(0);
+        generate_array(&mut src, "YY_FALLBACK", "i32",
+            self.symbols[0..mx].iter().map(|p| {
+                let p = p.borrow();
+                match p.fallback {
+                    None => {
+                        Ok(0)
+                    }
+                    Some(ref fb) => {
+                        let fb = fb.unwrap();
+                        let fb = fb.borrow();
+                        match (fb.dt_num, p.dt_num) {
+                            (None, _) => {}
+                            (Some(fdt), Some(pdt)) if fdt == pdt => {}
+                            _ => {
+                                return error("Fallback token must have the same type or no type at all");
+                            }
                         }
+                        Ok(fb.index)
                     }
                 }
-            }
-        }
-        println!("];");
+            }).collect::<Result<Vec<_>,_>>()?
+        );
 
         /* Generate the table of rule information
          **
          ** Note: This code depends on the fact that rules are number
          ** sequentually beginning with 0.
          */
-        println!("const YY_RULE_INFO: [YYCODETYPE; {}] = [", self.rules.len());
-        for rp in &self.rules {
-            let lhs = rp.borrow().lhs.unwrap();
-            let lhs = lhs.borrow();
-            println!("  {},", lhs.index);
-        }
-        println!("];");
+        generate_array(&mut src, "YY_RULE_INFO", &yycodetype,
+            self.rules.iter().map(|rp| {
+                let lhs = rp.borrow().lhs.unwrap();
+                let lhs = lhs.borrow();
+                lhs.index
+            })
+        );
 
-        print!("{}", include_str!("templ/t1.rs"));
-        if let Some(ref arg) = self.arg {
-            println!("    extra: {},", arg);
-        }
-        print!("{}", include_str!("templ/t2.rs"));
-        if let Some(ref arg) = self.arg {
-            println!("            extra: {},", arg);
-        }
-        print!("{}", include_str!("templ/t3.rs"));
+        let yyextratype : Type = syn::parse_str(self.arg.as_ref().map(String::as_str).unwrap_or("()")).expect("invalid extra type");
 
-        if let Some(ref arg) = self.arg {
-            println!("    pub fn into_extra(self) -> {} {{", arg);
-            println!("        self.extra");
-            println!("    }}");
-            println!("    pub fn extra(&self) -> &{} {{", arg);
-            println!("        &self.extra");
-            println!("    }}");
-        }
+        src.extend(quote!{
+            struct YYStackEntry {
+                stateno: i32, /* The state-number */
+                major: i32,     /* The major token value.  This is the code
+                                 ** number for the token at this stack level */
+                minor: YYMinorType,    /* The user-supplied minor token value.  This
+                                        ** is the value of the token  */
+            }
 
-        print!("{}", include_str!("templ/t4.rs"));
+            pub struct Parser {
+                yyerrcnt: i32, /* Shifts left before out of the error */
+                yystack: Vec<YYStackEntry>,
+                extra: #yyextratype,
+            }
+
+            impl Parser {
+                pub fn new(extra: #yyextratype) -> Parser {
+                    let mut p = Parser { yyerrcnt: -1, yystack: Vec::new(), extra: extra};
+                    p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0});
+                    p
+                }
+                pub fn into_extra(self) -> #yyextratype {
+                    self.extra
+                }
+                pub fn extra(&self) -> &#yyextratype {
+                    &self.extra
+                }
+
+                pub fn parse(&mut self, token: Token) {
+                    let (yymajor, yyminor) = token_value(token);
+                    let yyendofinput = yymajor==0;
+                    let mut yyerrorhit = false;
+                    while !self.yystack.is_empty() {
+                        let yyact = self.find_shift_action(yymajor);
+                        if yyact < YYNSTATE {
+                            assert!(!yyendofinput);  /* Impossible to shift the $ token */
+                            self.yy_shift(yyact, yymajor, yyminor);
+                            self.yyerrcnt -= 1;
+                            break;
+                        } else if yyact < YYNSTATE + YYNRULE {
+                            self.yy_reduce(yyact - YYNSTATE);
+                        } else {
+                            /* A syntax error has occurred.
+                             ** The response to an error depends upon whether or not the
+                             ** grammar defines an error token "ERROR".
+                             */
+                            assert!(yyact == YYNSTATE+YYNRULE);
+                            if YYERRORSYMBOL != 0 {
+                                /* This is what we do if the grammar does define ERROR:
+                                 **
+                                 **  * Call the %syntax_error function.
+                                 **
+                                 **  * Begin popping the stack until we enter a state where
+                                 **    it is legal to shift the error symbol, then shift
+                                 **    the error symbol.
+                                 **
+                                 **  * Set the error count to three.
+                                 **
+                                 **  * Begin accepting and shifting new tokens.  No new error
+                                 **    processing will occur until three tokens have been
+                                 **    shifted successfully.
+                                 **
+                                 */
+                                if self.yyerrcnt < 0 {
+                                    self.yy_syntax_error(yymajor, &yyminor);
+                                }
+                                let yymx = self.yystack[self.yystack.len() - 1].major;
+                                if yymx==YYERRORSYMBOL || yyerrorhit {
+                                    break;
+                                } else {
+                                    let mut yyact;
+                                    while !self.yystack.is_empty() {
+                                        yyact = self.find_reduce_action(YYERRORSYMBOL);
+                                        if yyact < YYNSTATE {
+                                            if !yyendofinput {
+                                                self.yy_shift(yyact, YYERRORSYMBOL, YYMinorType::YY0);
+                                            }
+                                            break;
+                                        }
+                                        self.yystack.pop().unwrap();
+                                    }
+                                    if self.yystack.is_empty() || yyendofinput {
+                                        self.yy_parse_failed();
+                                        break;
+                                    }
+                                }
+                                self.yyerrcnt = 3;
+                                yyerrorhit = true;
+                            } else {
+                                /* This is what we do if the grammar does not define ERROR:
+                                 **
+                                 **  * Report an error message, and throw away the input token.
+                                 **
+                                 **  * If the input token is $, then fail the parse.
+                                 **
+                                 ** As before, subsequent error messages are suppressed until
+                                 ** three input tokens have been successfully shifted.
+                                 */
+                                if self.yyerrcnt <= 0 {
+                                    self.yy_syntax_error(yymajor, &yyminor);
+                                }
+                                self.yyerrcnt = 3;
+                                if yyendofinput {
+                                    self.yy_parse_failed();
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                /*
+                 ** Find the appropriate action for a parser given the terminal
+                 ** look-ahead token look_ahead.
+                 */
+                fn find_shift_action(&self, look_ahead: i32) -> i32 {
+
+                    let stateno = self.yystack[self.yystack.len() - 1].stateno;
+
+                    if stateno > YY_SHIFT_COUNT {
+                        return YY_DEFAULT[stateno as usize] as i32;
+                    }
+                    let i = YY_SHIFT_OFST[stateno as usize] as i32;
+                    if i == YY_SHIFT_USE_DFLT {
+                        return YY_DEFAULT[stateno as usize] as i32;
+                    }
+                    assert!(look_ahead != YYNOCODE);
+                    let i = i + look_ahead;
+
+                    if i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead {
+                        if look_ahead > 0 {
+                            if (look_ahead as usize) < YY_FALLBACK.len() {
+                                let fallback = YY_FALLBACK[look_ahead as usize];
+                                if fallback != 0 {
+                                    println!("FALLBACK");
+                                    return self.find_shift_action(fallback);
+                                }
+                            }
+                            if YYWILDCARD > 0 {
+                                let j = i - look_ahead + (YYWILDCARD as i32);
+                                if j >= 0 && j < YY_ACTTAB_COUNT && YY_LOOKAHEAD[j as usize]==YYWILDCARD {
+                                    println!("WILDCARD");
+                                    return YY_ACTION[j as usize] as i32;
+                                }
+                            }
+                        }
+                        return YY_DEFAULT[stateno as usize] as i32;
+                    } else {
+                        return YY_ACTION[i as usize] as i32;
+                    }
+                }
+                /*
+                 ** Find the appropriate action for a parser given the non-terminal
+                 ** look-ahead token iLookAhead.
+                 */
+                fn find_reduce_action(&self, look_ahead: i32) -> i32 {
+                    let stateno = self.yystack[self.yystack.len() - 1].stateno;
+                    if YYERRORSYMBOL != 0 && stateno > YY_REDUCE_COUNT {
+                        return YY_DEFAULT[stateno as usize] as i32;
+                    }
+                    assert!(stateno <= YY_REDUCE_COUNT);
+                    let i = YY_REDUCE_OFST[stateno as usize] as i32;
+                    assert!(i != YY_REDUCE_USE_DFLT);
+                    assert!(look_ahead != YYNOCODE );
+                    let i = i + look_ahead;
+                    if YYERRORSYMBOL != 0 && (i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead) {
+                        return YY_DEFAULT[stateno as usize] as i32;
+                    }
+                    assert!(i >= 0 && i < YY_ACTTAB_COUNT);
+                    assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
+                    return YY_ACTION[i as usize] as i32;
+                }
+
+                fn yy_shift(&mut self, new_state: i32, major: i32, minor: YYMinorType) {
+                    self.yystack.push(YYStackEntry{stateno: new_state, major: major, minor: minor});
+                }
+                fn yy_reduce(&mut self, yyruleno: i32) {
+                    g_yy_reduce(self, yyruleno)
+                }
+                fn yy_parse_failed(&mut self) {
+                    self.yystack.clear();
+                }
+                fn yy_syntax_error(&mut self, yymajor: i32, yyminor: &YYMinorType) {
+                }
+                fn yy_accept(&mut self) {
+                    self.yystack.clear();
+                }
+            }
+        });
+
+
+        // Beginning here are the reduction cases
+        let mut yyreduce_str = String::from("fn g_yy_reduce(yy: &mut Parser, yyruleno: i32) {
+           let yygotominor: YYMinorType = match yyruleno {
+        ");
 
         /* Generate code which execution during each REDUCE action */
-        for rp in &self.rules {
-            let code = self.translate_code(&rp.borrow())?;
-            rp.borrow_mut().code = Some(code);
-        }
         /* First output rules other than the default: rule */
-        for (i, rp) in self.rules.iter().enumerate() {
-           let mut rp = rp.borrow_mut();
-           {
-               let code = match rp.code {
-                   None => continue,
-                   Some(ref code) => code.trim(),
-               };
-               if code.is_empty() { continue }
-
-               print!("            {} /* ", rp.index);
-               self.write_rule_text(&rp);
-               println!(" */");
-
-               for rp2 in &self.rules[i+1..] {
-                   let mut rp2 = rp2.borrow_mut();
-                   if rp2.code == rp.code {
-                       print!("          | {} /* ", rp2.index);
-                       self.write_rule_text(&rp2);
-                       println!(" */");
-                       rp2.code = None;
-                   }
-               }
-               print!("               => ");
-               self.emit_code(&rp);
-           }
-           rp.code = None;
+        //TODO avoid dumping the same code twice
+        for rp in &self.rules {
+            let mut rp = rp.borrow();
+            let code = self.translate_code(&rp)?;
+            yyreduce_str += &format!(" {} => {{ {} }}", rp.index, code);
         }
 
         /* Finally, output the default: rule.  We choose as the default: all
          ** empty actions. */
-        println!("            _ => unreachable!(),");
-
-        print!("{}", include_str!("templ/t5.rs"));
-        print!("{}", include_str!("templ/t6.rs"));
-        print!("{}", include_str!("templ/t7.rs"));
-        print!("{}", include_str!("templ/t8.rs"));
-
-        Ok(())
+        yyreduce_str += "_ => unreachable!(),
+                };
+                let yygoto = YY_RULE_INFO[yyruleno as usize] as i32;
+                let yyact = yy.find_reduce_action(yygoto);
+                if yyact < YYNSTATE {
+                    yy.yy_shift(yyact, yygoto, yygotominor);
+                } else {
+                    assert!(yyact == YYNSTATE + YYNRULE + 1);
+                    yy.yy_accept();
+                }
+            }";
+        println!("---------------\n{}\n----------------\n", yyreduce_str);
+        let yyreduce_fn : syn::ItemFn = syn::parse_str(&yyreduce_str).unwrap();
+        src.extend(yyreduce_fn.into_token_stream());
+        
+        Ok(src)
     }
 
     /*
@@ -2561,7 +2262,7 @@ impl Lemon {
         let lhs = lhs.borrow();
         let mut code = String::new();
         if let Some(ref dt) = lhs.data_type {
-            code += &format!("let yyres : {};\n", dt);
+            code += &format!("let yyres : {};\n", dt.into_token_stream()); //TODO
         }
         let err_sym = self.err_sym.unwrap();
 
@@ -2578,10 +2279,10 @@ impl Lemon {
             };
             match dt {
                 Some(_) => {
-                    code += &format!("let yyp{} = self.yystack.pop().unwrap();\n", i);
+                    code += &format!("let yyp{} = yy.yystack.pop().unwrap();\n", i);
                 }
                 None => {
-                    code += &format!("self.yystack.pop().unwrap();\n");
+                    code += &format!("yy.yystack.pop().unwrap();\n");
                 }
             }
         }
@@ -2659,8 +2360,8 @@ impl Lemon {
 
     fn rule_code(&self, rp: &Rule) -> io::Result<String> {
         let code = match rp.code {
-            None => "",
-            Some(ref code) => code,
+            None => "".to_string(),
+            Some(ref code) => code.to_string(),
         };
         let mut token = String::new();
         let mut res = String::new();
@@ -2708,19 +2409,5 @@ impl Lemon {
                 }
             }
         }
-    }
-
-    /*
-     ** Generate code which executes when the rule "rp" is reduced.  Write
-     ** the code to "out".
-     */
-    fn emit_code(&self, rp: &Rule) {
-        /* Generate code to do the reduce action */
-        let code = match rp.code {
-            None => return,
-            Some(ref code) => code
-        };
-
-        println!("{{\n{}}}", code);
     }
 }

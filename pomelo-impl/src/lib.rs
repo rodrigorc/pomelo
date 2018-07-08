@@ -1,3 +1,4 @@
+#![recursion_limit="256"]
 #![allow(unused_imports)]
 extern crate proc_macro;
 extern crate proc_macro2;
@@ -55,19 +56,15 @@ pub fn __pomelo_structs_and_impls(input: proc_macro::TokenStream) -> proc_macro:
     let cursor = buffer.begin();
     let (decls, _cursor) = parse_pomelo(cursor).unwrap();
 
-    let mut lemon = parser::Lemon::new_from_decls(&decls).unwrap();
-    lemon.build().unwrap();
+    let mut lemon = parser::Lemon::new_from_decls(decls).unwrap();
+    let expanded = lemon.build().unwrap();
 
-    let expanded = TokenStream::new();
-    /*
-    if let Decl::Type(ref id, ref _ty) = decls[0] {
-        expanded.extend(quote! {
-            struct #id
-        });
-        expanded.extend(quote! {  {}; });
-    }*/
-    //println!("OUT: {}", expanded);
-    expanded.into()
+    let x = quote!{
+        mod parser {
+            #expanded
+        }
+    };
+    x.into()
 }
 
 named!{parse_declaration -> Decl,
@@ -124,7 +121,7 @@ named!{parse_declaration -> Decl,
 named!{parse_rule -> Decl,
     do_parse!(
         lhs: syn!(Ident) >>
-        punct!(->) >>
+        punct!(<-) >>
         rhs: many0!(parse_rhs) >>
         action: alt!(
             do_parse!(

@@ -9,4 +9,4 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "*"
 quote = "*"
-syn = { version="*", features= ["extra-traits"] }
+syn = { version="*", features= ["full", "extra-traits"] }
