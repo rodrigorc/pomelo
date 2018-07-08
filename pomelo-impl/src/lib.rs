@@ -95,6 +95,11 @@ named!{parse_declaration -> Decl,
         )
         |
         do_parse!(
+            punct!(%) >> custom_keyword!(extra_argument) >> typ: syn!(Type) >> punct!(;) >>
+            (Decl::ExtraArgument(typ))
+        )
+        |
+        do_parse!(
             punct!(%) >> custom_keyword!(start_symbol) >> id: syn!(Ident) >> punct!(;) >>
             (Decl::StartSymbol(id))
         )

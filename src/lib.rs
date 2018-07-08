@@ -23,9 +23,9 @@ mod tests {
         %type IValue i32;
         %type expr i32;
         %left Plus Minus;
-        //%extra_argument ();
+        %extra_argument i32;
 
-        input <- expr(A) => { println!("RES = {}", A) }
+        input <- expr(A) => { *extra = A; }
         expr <- expr(A) Plus expr(B) => { A + B }
         expr <- expr(A) Minus expr(B) => { A - B }
         expr <- IValue(A) => { A }
@@ -34,12 +34,14 @@ mod tests {
     #[test]
     fn it_works() {
         use self::parser::*;
-        let mut p = Parser::new(());
+        let mut p = Parser::new(0);
         p.parse(Token::IValue(2));
         p.parse(Token::Plus);
         p.parse(Token::IValue(4));
         p.parse(Token::Plus);
         p.parse(Token::IValue(7));
         p.parse(Token::EOI);
+        let r = p.into_extra();
+        assert!(r == 13);
     }
 }

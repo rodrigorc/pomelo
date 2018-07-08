@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -45,7 +43,7 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 struct Rule {
     lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<WeakSymbolAlias>,   //RHS symbols and aliases
+    rhs: Vec<(WRc<RefCell<Symbol>>, Option<String>)>,   //RHS symbols and aliases
     code: Option<Group>,//The code executed when this rule is reduced
     prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
     index: usize,         //An index number for this rule
@@ -234,16 +232,12 @@ pub struct Lemon {
     symbols: Vec<Rc<RefCell<Symbol>>>,   //Sorted array of symbols
     err_sym: WRc<RefCell<Symbol>>,      //The error symbol
     wildcard: Option<WRc<RefCell<Symbol>>>,     //The symbol that matches anything
-    arg: Option<String>,        //Declaration of the 3rd argument to parser
+    arg: Option<Type>,        //Declaration of the extra argument to parser
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
     var_type: Option<Type>,
     start: Option<String>,
 }
-
-
-type SymbolAlias = (Rc<RefCell<Symbol>>, Option<String>);
-type WeakSymbolAlias = (WRc<RefCell<Symbol>>, Option<String>);
 
 struct ParserData {
     precedence: i32,
@@ -1584,6 +1578,12 @@ impl Lemon {
                 }
                 self.var_type = Some(ty);
             }
+            Decl::ExtraArgument(ty) => {
+                if self.var_type.is_some() {
+                    return error("Extra argument type already defined");
+                }
+                self.arg = Some(ty);
+            }
             Decl::StartSymbol(id) => {
                 if self.start.is_some() {
                     return error("Start symbol already defined");
@@ -1703,6 +1703,7 @@ impl Lemon {
         src.extend(quote!{
             #![allow(dead_code)]
             #![allow(unused_variables)]
+            #![allow(non_snake_case)]
         });
         //include_str!("templ/t0.rs")
         /* Generate the defines */
@@ -1988,7 +1989,7 @@ impl Lemon {
         /* Generate the table of fallback tokens. */
         let mx = self.symbols.iter().enumerate().rfind(|(_,sy)|
                         sy.borrow().fallback.is_some()
-                    ).map(|(x,_)| x + 1).unwrap_or(0);
+                    ).map_or(0, |(x,_)| x + 1);
         generate_array(&mut src, "YY_FALLBACK", "i32",
             self.symbols[0..mx].iter().map(|p| {
                 let p = p.borrow();
@@ -2025,7 +2026,8 @@ impl Lemon {
             })
         );
 
-        let yyextratype : Type = syn::parse_str(self.arg.as_ref().map(String::as_str).unwrap_or("()")).expect("invalid extra type");
+        let unit_type = syn::parse_str("()").unwrap();
+        let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
 
         src.extend(quote!{
             struct YYStackEntry {
@@ -2220,7 +2222,7 @@ impl Lemon {
 
         // Beginning here are the reduction cases
         let mut yyreduce_str = String::from("fn g_yy_reduce(yy: &mut Parser, yyruleno: i32) {
-           let yygotominor: YYMinorType = match yyruleno {
+            let yygotominor: YYMinorType = match yyruleno {
         ");
 
         /* Generate code which execution during each REDUCE action */
@@ -2261,9 +2263,6 @@ impl Lemon {
         let lhs = rp.lhs.unwrap();
         let lhs = lhs.borrow();
         let mut code = String::new();
-        if let Some(ref dt) = lhs.data_type {
-            code += &format!("let yyres : {};\n", dt.into_token_stream()); //TODO
-        }
         let err_sym = self.err_sym.unwrap();
 
         for (i, r) in rp.rhs.iter().enumerate().rev() {
@@ -2287,7 +2286,15 @@ impl Lemon {
             }
         }
         let mut refutable = false;
-        code += "let yyres = match (";
+        code += "let ref mut extra = yy.extra;\n";
+        code += "let yyres : ";
+        if let Some(ref dt) = lhs.data_type {
+            code += &dt.into_token_stream().to_string();
+        } else {
+            code += "()";
+        }
+
+        code += " = match (";
         for (i, r) in rp.rhs.iter().enumerate() {
             let r_ = r.0.unwrap();
             let ref alias = r.1;
@@ -2300,7 +2307,7 @@ impl Lemon {
                 }
                 _ => r.dt_num,
             };
-            if !Rc::ptr_eq(&r_, &err_sym) && alias.is_some() && dt.is_some() {
+            if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
                 refutable = true;
                 code += &format!("yyp{}.minor,", i);
             }
@@ -2319,7 +2326,7 @@ impl Lemon {
 
         code += ") {\n    (";
 
-        for (i, r) in rp.rhs.iter().enumerate() {
+        for (_i, r) in rp.rhs.iter().enumerate() {
             let r_ = r.0.unwrap();
             let ref alias = r.1;
             let r = r_.borrow();
@@ -2331,14 +2338,15 @@ impl Lemon {
                 }
                 _ => r.dt_num,
             };
-            if !Rc::ptr_eq(&r_, &err_sym) && alias.is_some() && dt.is_some() {
-                code += &format!("YYMinorType::YY{}(yy{}),", dt.unwrap(), i);
+            if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
+                code += &format!("YYMinorType::YY{}({}),", dt.unwrap(), alias.as_ref().map_or("_", String::as_str));
             }
         }
         code += ") => {\n";
 
-        let rule_code = self.rule_code(&rp)?; // argument replacement
-        code += &rule_code;
+        if let Some(ref rule_code) = rp.code {
+            code += &rule_code.to_string();
+        }
 
         if refutable {
             code += "\n    }\n    _ => unreachable!()\n};\n";
@@ -2356,58 +2364,5 @@ impl Lemon {
         }
 
         Ok(code)
-    }
-
-    fn rule_code(&self, rp: &Rule) -> io::Result<String> {
-        let code = match rp.code {
-            None => "".to_string(),
-            Some(ref code) => code.to_string(),
-        };
-        let mut token = String::new();
-        let mut res = String::new();
-        for c in code.chars() {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                token.push(c);
-            } else {
-                for (i, (_, ralias)) in rp.rhs.iter().enumerate() {
-                    if let Some(ref ralias) = ralias {
-                        if *ralias == token {
-                            res += &format!("yy{}", i);
-                            token = String::new();
-                            break;
-                        }
-                    }
-                }
-                if !token.is_empty() {
-                    res += &token;
-                    token = String::new();
-                }
-                res.push(c);
-            }
-        }
-
-        Ok(res)
-    }
-
-    fn write_rule_text(&self, rp: &Rule) {
-        let lhs = rp.lhs.unwrap();
-        let lhs = lhs.borrow();
-        print!("{} ::=", lhs.name);
-        for sp in &rp.rhs {
-            let sp = sp.0.unwrap();
-            let sp = sp.borrow();
-            match sp.typ {
-                MultiTerminal(ref ss) => {
-                    for k in ss {
-                        let k = k.unwrap();
-                        let k = k.borrow();
-                        print!("|{}", k.name);
-                    }
-                }
-                _ => {
-                    print!(" {}", sp.name);
-                }
-            }
-        }
     }
 }

@@ -13,6 +13,7 @@ pub enum Decl {
     Type(Ident, Type),
     Assoc(Associativity, Vec<Ident>),
     DefaultType(Type),
+    ExtraArgument(Type),
     StartSymbol(Ident),
     Fallback(Ident, Vec<Ident>),
     Wildcard(Ident),
