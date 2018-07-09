@@ -13,9 +13,6 @@ macro_rules! pomelo {
     };
 }
 
-pub enum Foo {
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -38,10 +35,13 @@ mod tests {
         p.parse(Token::IValue(2));
         p.parse(Token::Plus);
         p.parse(Token::IValue(4));
-        p.parse(Token::Plus);
-        p.parse(Token::IValue(7));
-        p.parse(Token::EOI);
+        p.parse(Token::Minus);
+        p.parse(Token::IValue(1));
+        p.parse(Token::Minus);
+        p.parse(Token::IValue(0));
+        p.parse_eoi();
         let r = p.into_extra();
-        assert!(r == 13);
+        println!("RES {}", r);
+        assert!(r == 5);
     }
 }

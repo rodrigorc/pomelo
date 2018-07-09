@@ -1878,11 +1878,10 @@ impl Lemon {
         //TODO derive
         let mut yytoken : syn::ItemEnum = parse_quote!{
             pub enum Token {
-                EOI,
             }
         };
 
-        let yytoken_span = yytoken.variants.first().unwrap().value().ident.span();
+        let yytoken_span = yytoken.brace_token.0;
 
         for i in 1 .. self.nterminal {
             let ref s = self.symbols[i];
@@ -1907,8 +1906,7 @@ impl Lemon {
         let mut yytoken_str = String::from("
             #[inline]
             fn token_value(t: Token) -> (i32, YYMinorType) {
-                match t {
-                    Token::EOI => (0, YYMinorType::YY0),");
+                match t { ");
         for i in 1 .. self.nterminal {
             let s = self.symbols[i].borrow();
             match s.dt_num {
@@ -2056,9 +2054,19 @@ impl Lemon {
                 pub fn extra(&self) -> &#yyextratype {
                     &self.extra
                 }
+                pub fn extra_mut(&mut self) -> &mut #yyextratype {
+                    &mut self.extra
+                }
 
+                #[inline]
                 pub fn parse(&mut self, token: Token) {
-                    let (yymajor, yyminor) = token_value(token);
+                    self.parse_token(token_value(token))
+                }
+                pub fn parse_eoi(&mut self) {
+                    self.parse_token((0, YYMinorType::YY0))
+                }
+
+                fn parse_token(&mut self, (yymajor, yyminor): (i32, YYMinorType)) {
                     let yyendofinput = yymajor==0;
                     let mut yyerrorhit = false;
                     while !self.yystack.is_empty() {
