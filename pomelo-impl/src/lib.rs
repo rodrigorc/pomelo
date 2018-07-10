@@ -126,18 +126,18 @@ named!{parse_declaration -> Decl,
 named!{parse_rule -> Decl,
     do_parse!(
         lhs: syn!(Ident) >>
-        punct!(<-) >>
+        punct!(::) >> punct!(=) >>
         rhs: many0!(parse_rhs) >>
+        prec: option!(parse_precedence_in_rule) >>
         action: alt!(
             do_parse!(
-                punct!(=>) >>
+                //punct!(=>) >>
                 action: syn!(Group) >>
                 (Some(action))
             )
             |
             punct!(;) => { |_| None }
         ) >>
-        prec: option!(parse_precedence_in_rule) >>
         (Decl::Rule { lhs, rhs, action, prec })
     )
 }

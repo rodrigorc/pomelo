@@ -552,11 +552,15 @@ impl Lemon {
         println!("--> find actions");
         self.find_actions()?;
 
+        if self.nconflict > 0 {
+            self.report_output();
+            return error("Parsing conflicts");
+        }
+
         println!("--> compress ");
         self.compress_tables();
         println!("--> resort ");
         self.resort_states();
-        self._report_output();
 
         println!("--> generate ");
         let src = self.generate_source()?;
@@ -1259,24 +1263,25 @@ impl Lemon {
         Some(act)
     }
 
-    fn _report_output(&self) {
+    fn report_output(&self) {
         for stp in &self.states {
             let stp = stp.borrow();
-            println!("State {}:", stp.state_num);
+            let mut state_info = format!("State {}:\n", stp.state_num);
+            let mut num_conflicts = 0;
             for cfp in &stp.cfp {
                 let cfp = cfp.borrow();
                 let rule = cfp.rule.unwrap();
                 let rule = rule.borrow();
                 if cfp.dot == rule.rhs.len() {
-                    print!("    {:>5} ", format!("({})", rule.index));
+                    state_info += &format!("    {:>5} ", format!("({})", rule.index));
                 } else {
-                    print!("          ");
+                    state_info += &format!("          ");
                 }
                 let lhs = rule.lhs.unwrap();
-                print!("{} ::=", lhs.borrow().name);
+                state_info += &format!("{} ::=", lhs.borrow().name);
                 for (i, (sp,_)) in rule.rhs.iter().enumerate() {
                     if i == cfp.dot {
-                        print!(" *");
+                        state_info += &format!(" *");
                     }
                     let sp = sp.unwrap();
                     let sp = sp.borrow();
@@ -1285,21 +1290,21 @@ impl Lemon {
                             let ss = ss.unwrap();
                             let ss = ss.borrow();
                             if j == 0 {
-                                print!(" {}", ss.name);
+                                state_info += &format!(" {}", ss.name);
                             } else {
-                                print!("|{}", ss.name);
+                                state_info += &format!("|{}", ss.name);
                             }
                         }
                     } else {
-                        print!(" {}", sp.name);
+                        state_info += &format!(" {}", sp.name);
                     }
                 }
                 if cfp.dot == rule.rhs.len() {
-                    print!(" *");
+                    state_info += &format!(" *");
                 }
-                println!();
+                state_info += "\n";
             }
-            println!();
+            state_info += "\n";
             for ap in &stp.ap {
                 let ap = ap.borrow();
                 use self::EAction::*;
@@ -1309,46 +1314,52 @@ impl Lemon {
                     Shift(ref stp) => {
                         let stp = stp.unwrap();
                         let stp = stp.borrow();
-                        print!("{:>30} shift  {}", sp.name, stp.state_num);
+                        state_info += &format!("{:>30} shift  {}", sp.name, stp.state_num);
                     }
                     Reduce(ref rp) => {
                         let rp = rp.unwrap();
                         let rp = rp.borrow();
-                        print!("{:>30} reduce {}", sp.name, rp.index);
+                        state_info += &format!("{:>30} reduce {}", sp.name, rp.index);
                     }
                     Accept => {
-                        print!("{:>30} accept", sp.name);
+                        state_info += &format!("{:>30} accept", sp.name);
                     }
                     Error => {
-                        print!("{:>30} error", sp.name);
+                        state_info += &format!("{:>30} error", sp.name);
                     }
                     SRConflict(ref rp) |
                     RRConflict(ref rp) => {
                         let rp = rp.unwrap();
                         let rp = rp.borrow();
-                        print!("{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.index);
+                        state_info += &format!("{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.index);
+                        num_conflicts += 1;
                     }
                     SSConflict(ref stp) => {
                         let stp = stp.unwrap();
                         let stp = stp.borrow();
-                        print!("{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.state_num);
+                        state_info += &format!("{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.state_num);
+                        num_conflicts += 1;
                     }
                     SHResolved(ref stp) => {
                         let stp = stp.unwrap();
                         let stp = stp.borrow();
-                        print!("{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.state_num);
+                        state_info += &format!("{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.state_num);
                     }
                     RDResolved(ref rp) => {
                         let rp = rp.unwrap();
                         let rp = rp.borrow();
-                        print!("{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.index);
+                        state_info += &format!("{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.index);
                     }
                     _ => continue,
                 }
-                println!();
+                state_info += "\n";
             }
-            println!();
+            state_info += "\n";
+            if num_conflicts > 0 {
+                print!("{}", state_info);
+            }
         }
+        /*
         println!("----------------------------------------------------");
         println!("Symbols:");
         for i in 0 .. self.nsymbol {
@@ -1366,7 +1377,7 @@ impl Lemon {
                 }
             }
             println!();
-        }
+        }*/
     }
 
     fn get_precedence(p: &Option<WRc<RefCell<Symbol>>>) -> Option<Precedence> {
@@ -2036,15 +2047,16 @@ impl Lemon {
                                         ** is the value of the token  */
             }
 
-            pub struct Parser {
+            pub struct Parser<CB: PomeloCallback<#yyextratype>> {
                 yyerrcnt: i32, /* Shifts left before out of the error */
                 yystack: Vec<YYStackEntry>,
                 extra: #yyextratype,
+                cb: CB,
             }
 
-            impl Parser {
-                pub fn new(extra: #yyextratype) -> Parser {
-                    let mut p = Parser { yyerrcnt: -1, yystack: Vec::new(), extra: extra};
+            impl<CB: PomeloCallback<#yyextratype>> Parser<CB> {
+                pub fn new(extra: #yyextratype , cb: CB) -> Parser<CB> {
+                    let mut p = Parser { yyerrcnt: -1, yystack: Vec::new(), extra: extra, cb};
                     p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0});
                     p
                 }
@@ -2218,20 +2230,24 @@ impl Lemon {
                 }
                 fn yy_parse_failed(&mut self) {
                     self.yystack.clear();
+                    self.cb.parse_fail(&mut self.extra);
                 }
                 fn yy_syntax_error(&mut self, yymajor: i32, yyminor: &YYMinorType) {
+                    //TODO send token
+                    self.cb.syntax_error(&mut self.extra);
                 }
                 fn yy_accept(&mut self) {
                     self.yystack.clear();
+                    self.cb.parse_accept(&mut self.extra);
                 }
             }
         });
 
 
         // Beginning here are the reduction cases
-        let mut yyreduce_str = String::from("fn g_yy_reduce(yy: &mut Parser, yyruleno: i32) {
-            let yygotominor: YYMinorType = match yyruleno {
-        ");
+        let mut yyreduce_str = format!("fn g_yy_reduce<CB: PomeloCallback<{}>>(yy: &mut Parser<CB>, yyruleno: i32) {{
+            let yygotominor: YYMinorType = match yyruleno {{
+        ", yyextratype.into_token_stream());
 
         /* Generate code which execution during each REDUCE action */
         /* First output rules other than the default: rule */
