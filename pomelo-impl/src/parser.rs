@@ -480,16 +480,16 @@ fn is_lowercase(id: &Ident) -> bool {
     id.to_string().chars().next().unwrap().is_ascii_lowercase()
 }
 
-fn generate_const<T, D>(src: &mut TokenStream, name: &str, ty: T, value: D) 
+fn generate_const<T, D>(src: &mut TokenStream, name: &str, ty: T, value: D)
 where T: fmt::Display,
       D: fmt::Display {
 
     let txt = format!("const {}: {} = {};", name, ty, value);
     let expr : syn::ItemConst = syn::parse_str(&txt).unwrap();
-    src.extend(expr.into_token_stream());
+    expr.to_tokens(src);
 }
 
-fn generate_array<T, D, DI>(src: &mut TokenStream, name: &str, ty: T, data: D) 
+fn generate_array<T, D, DI>(src: &mut TokenStream, name: &str, ty: T, data: D)
 where T: fmt::Display,
       DI: fmt::Display,
       D: IntoIterator<Item = DI> {
@@ -500,7 +500,7 @@ where T: fmt::Display,
     }
     txt += "];";
     let expr : syn::ItemStatic = syn::parse_str(&txt).unwrap();
-    src.extend(expr.into_token_stream());
+    expr.to_tokens(src);
 }
 
 impl Lemon {
@@ -1725,9 +1725,8 @@ impl Lemon {
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
         });
-        //include_str!("templ/t0.rs")
-        /* Generate the defines */
 
+        /* Generate the defines */
         let yycodetype = minimum_size_type(true, self.nsymbol+1);
         let yyactiontype = minimum_size_type(false, self.states.len() + self.rules.len() + 5);
         src.extend(quote!{
@@ -1798,20 +1797,20 @@ impl Lemon {
             return error("Token enum declaration must be empty");
         }
 
-        let ref yy_generics = yytoken.generics.params;
+        let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
 
         /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
-        let mut yyminortype_str = if yy_generics.is_empty()  {
-            String::from("enum YYMinorType { YY0,")
-        } else {
-            format!("enum YYMinorType<{}> {{ YY0,", yy_generics.into_token_stream())
-        };
+        let mut yyminortype_str = format!("enum YYMinorType{} {} {{ YY0,",
+                    tokens_to_string(&yy_generics_impl),
+                    tokens_to_string(&yy_generics_where),
+                    );
         for (k, v) in &types {
-            yyminortype_str += &format!("YY{}({}),", v, k.into_token_stream());
+            yyminortype_str += &format!("YY{}({}),", v, tokens_to_string(&k));
         }
         yyminortype_str += "}";
         let yyminortype_enum : ItemEnum = syn::parse_str(&yyminortype_str).unwrap();
-        src.extend(yyminortype_enum.into_token_stream());
+        yyminortype_enum.to_tokens(&mut src);
+
 
         generate_const(&mut src, "YYNSTATE", "i32", self.states.len());
         generate_const(&mut src, "YYNRULE", "i32", self.rules.len());
@@ -1930,12 +1929,15 @@ impl Lemon {
                 discriminant: None,
             });
         }
-        src.extend(yytoken.clone().into_token_stream());
+        yytoken.to_tokens(&mut src);
 
-        let mut yytoken_str = String::from("
+        let mut yytoken_str = format!("
             #[inline]
-            fn token_value(t: Token) -> (i32, YYMinorType) {
-                match t { ");
+            fn token_value{0}(t: Token{1}) -> (i32, YYMinorType{1}) {2} {{
+                match t {{ ",
+                tokens_to_string(&yy_generics_impl),
+                tokens_to_string(&yy_generics),
+                tokens_to_string(&yy_generics_where));
         for i in 1 .. self.nterminal {
             let s = self.symbols[i].borrow();
             match s.dt_num {
@@ -1951,7 +1953,7 @@ impl Lemon {
                 }
             }";
         let yytoken_fn : syn::ItemFn = syn::parse_str(&yytoken_str).unwrap();
-        src.extend(yytoken_fn.into_token_stream());
+        yytoken_fn.to_tokens(&mut src);
 
         /* Return the number of entries in the yy_action table */
         generate_const(&mut src, "YY_ACTTAB_COUNT", "i32", acttab.a_action.len());
@@ -2056,30 +2058,29 @@ impl Lemon {
         let unit_type = syn::parse_str("()").unwrap();
         let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
 
-        let mut yy_generics_with_cb_full = yy_generics.clone();
-        yy_generics_with_cb_full.push(parse_quote!{ CB: PomeloCallback<#yyextratype> } );
+        let mut yy_generics_with_cb = yytoken.generics.clone();
+        yy_generics_with_cb.params.push(parse_quote!{ CB: PomeloCallback<#yyextratype> } );
 
-        let mut yy_generics_with_cb = yy_generics.clone();
-        yy_generics_with_cb.push(parse_quote!{ CB } );
+        let (yy_generics_with_cb_impl, yy_generics_with_cb, yy_generics_with_cb_where) = yy_generics_with_cb.split_for_impl();
 
         src.extend(quote!{
-            struct YYStackEntry<#yy_generics> {
-                stateno: i32, /* The state-number */
+            struct YYStackEntry #yy_generics_impl #yy_generics_where {
+                stateno: i32,   /* The state-number */
                 major: i32,     /* The major token value.  This is the code
                                  ** number for the token at this stack level */
-                minor: YYMinorType<#yy_generics>,    /* The user-supplied minor token value.  This
+                minor: YYMinorType #yy_generics,    /* The user-supplied minor token value.  This
                                         ** is the value of the token  */
             }
 
-            pub struct Parser<#yy_generics_with_cb_full> {
+            pub struct Parser #yy_generics_with_cb_impl #yy_generics_with_cb_where {
                 yyerrcnt: i32, /* Shifts left before out of the error */
-                yystack: Vec<YYStackEntry<#yy_generics>>,
+                yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 cb: CB,
             }
 
-            impl<#yy_generics_with_cb_full> Parser<#yy_generics_with_cb> {
-                pub fn new(extra: #yyextratype , cb: CB) -> Self {
+            impl #yy_generics_with_cb_impl Parser #yy_generics_with_cb #yy_generics_with_cb_where {
+                pub fn new(extra: #yyextratype, cb: CB) -> Self {
                     let mut p = Parser { yyerrcnt: -1, yystack: Vec::new(), extra: extra, cb};
                     p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0});
                     p
@@ -2093,185 +2094,184 @@ impl Lemon {
                 pub fn extra_mut(&mut self) -> &mut #yyextratype {
                     &mut self.extra
                 }
-
-                #[inline]
-                pub fn parse(&mut self, token: Token<#yy_generics>) {
-                    self.parse_token(token_value(token))
+                pub fn parse(&mut self, token: Token #yy_generics) {
+                    let (a, b) = token_value(token);
+                    yy_parse_token(self, a, b)
                 }
                 pub fn parse_eoi(&mut self) {
-                    self.parse_token((0, YYMinorType::YY0))
+                    yy_parse_token(self, 0, YYMinorType::YY0)
                 }
+            }
 
-                fn parse_token(&mut self, (yymajor, yyminor): (i32, YYMinorType<#yy_generics>)) {
-                    let yyendofinput = yymajor==0;
-                    let mut yyerrorhit = false;
-                    while !self.yystack.is_empty() {
-                        let yyact = self.find_shift_action(yymajor);
-                        if yyact < YYNSTATE {
-                            assert!(!yyendofinput);  /* Impossible to shift the $ token */
-                            self.yy_shift(yyact, yymajor, yyminor);
-                            self.yyerrcnt -= 1;
-                            break;
-                        } else if yyact < YYNSTATE + YYNRULE {
-                            self.yy_reduce(yyact - YYNSTATE);
-                        } else {
-                            /* A syntax error has occurred.
-                             ** The response to an error depends upon whether or not the
-                             ** grammar defines an error token "ERROR".
+            fn yy_parse_token #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yymajor: i32, yyminor: YYMinorType #yy_generics) #yy_generics_with_cb_where {
+                let yyendofinput = yymajor==0;
+                let mut yyerrorhit = false;
+                while !yy.yystack.is_empty() {
+                    let yyact = yy_find_shift_action(yy, yymajor);
+                    if yyact < YYNSTATE {
+                        assert!(!yyendofinput);  /* Impossible to shift the $ token */
+                        yy_shift(yy, yyact, yymajor, yyminor);
+                        yy.yyerrcnt -= 1;
+                        break;
+                    } else if yyact < YYNSTATE + YYNRULE {
+                        yy_reduce(yy, yyact - YYNSTATE);
+                    } else {
+                        /* A syntax error has occurred.
+                         ** The response to an error depends upon whether or not the
+                         ** grammar defines an error token "ERROR".
+                         */
+                        assert!(yyact == YYNSTATE+YYNRULE);
+                        if YYERRORSYMBOL != 0 {
+                            /* This is what we do if the grammar does define ERROR:
+                             **
+                             **  * Call the %syntax_error function.
+                             **
+                             **  * Begin popping the stack until we enter a state where
+                             **    it is legal to shift the error symbol, then shift
+                             **    the error symbol.
+                             **
+                             **  * Set the error count to three.
+                             **
+                             **  * Begin accepting and shifting new tokens.  No new error
+                             **    processing will occur until three tokens have been
+                             **    shifted successfully.
+                             **
                              */
-                            assert!(yyact == YYNSTATE+YYNRULE);
-                            if YYERRORSYMBOL != 0 {
-                                /* This is what we do if the grammar does define ERROR:
-                                 **
-                                 **  * Call the %syntax_error function.
-                                 **
-                                 **  * Begin popping the stack until we enter a state where
-                                 **    it is legal to shift the error symbol, then shift
-                                 **    the error symbol.
-                                 **
-                                 **  * Set the error count to three.
-                                 **
-                                 **  * Begin accepting and shifting new tokens.  No new error
-                                 **    processing will occur until three tokens have been
-                                 **    shifted successfully.
-                                 **
-                                 */
-                                if self.yyerrcnt < 0 {
-                                    self.yy_syntax_error(yymajor, &yyminor);
-                                }
-                                let yymx = self.yystack[self.yystack.len() - 1].major;
-                                if yymx==YYERRORSYMBOL || yyerrorhit {
-                                    break;
-                                } else {
-                                    let mut yyact;
-                                    while !self.yystack.is_empty() {
-                                        yyact = self.find_reduce_action(YYERRORSYMBOL);
-                                        if yyact < YYNSTATE {
-                                            if !yyendofinput {
-                                                self.yy_shift(yyact, YYERRORSYMBOL, YYMinorType::YY0);
-                                            }
-                                            break;
+                            if yy.yyerrcnt < 0 {
+                                yy_syntax_error(yy, yymajor, &yyminor);
+                            }
+                            let yymx = yy.yystack[yy.yystack.len() - 1].major;
+                            if yymx==YYERRORSYMBOL || yyerrorhit {
+                                break;
+                            } else {
+                                let mut yyact;
+                                while !yy.yystack.is_empty() {
+                                    yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
+                                    if yyact < YYNSTATE {
+                                        if !yyendofinput {
+                                            yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0);
                                         }
-                                        self.yystack.pop().unwrap();
-                                    }
-                                    if self.yystack.is_empty() || yyendofinput {
-                                        self.yy_parse_failed();
                                         break;
                                     }
+                                    yy.yystack.pop().unwrap();
                                 }
-                                self.yyerrcnt = 3;
-                                yyerrorhit = true;
-                            } else {
-                                /* This is what we do if the grammar does not define ERROR:
-                                 **
-                                 **  * Report an error message, and throw away the input token.
-                                 **
-                                 **  * If the input token is $, then fail the parse.
-                                 **
-                                 ** As before, subsequent error messages are suppressed until
-                                 ** three input tokens have been successfully shifted.
-                                 */
-                                if self.yyerrcnt <= 0 {
-                                    self.yy_syntax_error(yymajor, &yyminor);
+                                if yy.yystack.is_empty() || yyendofinput {
+                                    yy_parse_failed(yy);
+                                    break;
                                 }
-                                self.yyerrcnt = 3;
-                                if yyendofinput {
-                                    self.yy_parse_failed();
-                                }
-                                break;
                             }
+                            yy.yyerrcnt = 3;
+                            yyerrorhit = true;
+                        } else {
+                            /* This is what we do if the grammar does not define ERROR:
+                             **
+                             **  * Report an error message, and throw away the input token.
+                             **
+                             **  * If the input token is $, then fail the parse.
+                             **
+                             ** As before, subsequent error messages are suppressed until
+                             ** three input tokens have been successfully shifted.
+                             */
+                            if yy.yyerrcnt <= 0 {
+                                yy_syntax_error(yy, yymajor, &yyminor);
+                            }
+                            yy.yyerrcnt = 3;
+                            if yyendofinput {
+                                yy_parse_failed(yy);
+                            }
+                            break;
                         }
                     }
                 }
+            }
 
-                /*
-                 ** Find the appropriate action for a parser given the terminal
-                 ** look-ahead token look_ahead.
-                 */
-                fn find_shift_action(&self, look_ahead: i32) -> i32 {
+            /*
+             ** Find the appropriate action for a parser given the terminal
+             ** look-ahead token look_ahead.
+             */
+            fn yy_find_shift_action #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, look_ahead: i32) -> i32 #yy_generics_with_cb_where {
 
-                    let stateno = self.yystack[self.yystack.len() - 1].stateno;
+                let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
 
-                    if stateno > YY_SHIFT_COUNT {
-                        return YY_DEFAULT[stateno as usize] as i32;
-                    }
-                    let i = YY_SHIFT_OFST[stateno as usize] as i32;
-                    if i == YY_SHIFT_USE_DFLT {
-                        return YY_DEFAULT[stateno as usize] as i32;
-                    }
-                    assert!(look_ahead != YYNOCODE);
-                    let i = i + look_ahead;
+                if stateno > YY_SHIFT_COUNT {
+                    return YY_DEFAULT[stateno as usize] as i32;
+                }
+                let i = YY_SHIFT_OFST[stateno as usize] as i32;
+                if i == YY_SHIFT_USE_DFLT {
+                    return YY_DEFAULT[stateno as usize] as i32;
+                }
+                assert!(look_ahead != YYNOCODE);
+                let i = i + look_ahead;
 
-                    if i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead {
-                        if look_ahead > 0 {
-                            if (look_ahead as usize) < YY_FALLBACK.len() {
-                                let fallback = YY_FALLBACK[look_ahead as usize];
-                                if fallback != 0 {
-                                    println!("FALLBACK");
-                                    return self.find_shift_action(fallback);
-                                }
-                            }
-                            if YYWILDCARD > 0 {
-                                let j = i - look_ahead + (YYWILDCARD as i32);
-                                if j >= 0 && j < YY_ACTTAB_COUNT && YY_LOOKAHEAD[j as usize]==YYWILDCARD {
-                                    println!("WILDCARD");
-                                    return YY_ACTION[j as usize] as i32;
-                                }
+                if i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead {
+                    if look_ahead > 0 {
+                        if (look_ahead as usize) < YY_FALLBACK.len() {
+                            let fallback = YY_FALLBACK[look_ahead as usize];
+                            if fallback != 0 {
+                                return yy_find_shift_action(yy, fallback);
                             }
                         }
-                        return YY_DEFAULT[stateno as usize] as i32;
-                    } else {
-                        return YY_ACTION[i as usize] as i32;
+                        if YYWILDCARD > 0 {
+                            let j = i - look_ahead + (YYWILDCARD as i32);
+                            if j >= 0 && j < YY_ACTTAB_COUNT && YY_LOOKAHEAD[j as usize]==YYWILDCARD {
+                                return YY_ACTION[j as usize] as i32;
+                            }
+                        }
                     }
-                }
-                /*
-                 ** Find the appropriate action for a parser given the non-terminal
-                 ** look-ahead token iLookAhead.
-                 */
-                fn find_reduce_action(&self, look_ahead: i32) -> i32 {
-                    let stateno = self.yystack[self.yystack.len() - 1].stateno;
-                    if YYERRORSYMBOL != 0 && stateno > YY_REDUCE_COUNT {
-                        return YY_DEFAULT[stateno as usize] as i32;
-                    }
-                    assert!(stateno <= YY_REDUCE_COUNT);
-                    let i = YY_REDUCE_OFST[stateno as usize] as i32;
-                    assert!(i != YY_REDUCE_USE_DFLT);
-                    assert!(look_ahead != YYNOCODE );
-                    let i = i + look_ahead;
-                    if YYERRORSYMBOL != 0 && (i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead) {
-                        return YY_DEFAULT[stateno as usize] as i32;
-                    }
-                    assert!(i >= 0 && i < YY_ACTTAB_COUNT);
-                    assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
+                    return YY_DEFAULT[stateno as usize] as i32;
+                } else {
                     return YY_ACTION[i as usize] as i32;
                 }
+            }
 
-                fn yy_shift(&mut self, new_state: i32, major: i32, minor: YYMinorType<#yy_generics>) {
-                    self.yystack.push(YYStackEntry{stateno: new_state, major: major, minor: minor});
+            /*
+             ** Find the appropriate action for a parser given the non-terminal
+             ** look-ahead token iLookAhead.
+             */
+            fn yy_find_reduce_action #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, look_ahead: i32) -> i32 #yy_generics_with_cb_where {
+                let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
+                if YYERRORSYMBOL != 0 && stateno > YY_REDUCE_COUNT {
+                    return YY_DEFAULT[stateno as usize] as i32;
                 }
-                fn yy_reduce(&mut self, yyruleno: i32) {
-                    g_yy_reduce(self, yyruleno)
+                assert!(stateno <= YY_REDUCE_COUNT);
+                let i = YY_REDUCE_OFST[stateno as usize] as i32;
+                assert!(i != YY_REDUCE_USE_DFLT);
+                assert!(look_ahead != YYNOCODE );
+                let i = i + look_ahead;
+                if YYERRORSYMBOL != 0 && (i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead) {
+                    return YY_DEFAULT[stateno as usize] as i32;
                 }
-                fn yy_parse_failed(&mut self) {
-                    self.yystack.clear();
-                    self.cb.parse_fail(&mut self.extra);
-                }
-                fn yy_syntax_error(&mut self, yymajor: i32, yyminor: &YYMinorType<#yy_generics>) {
-                    //TODO send token
-                    self.cb.syntax_error(&mut self.extra);
-                }
-                fn yy_accept(&mut self) {
-                    self.yystack.clear();
-                    self.cb.parse_accept(&mut self.extra);
-                }
+                assert!(i >= 0 && i < YY_ACTTAB_COUNT);
+                assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
+                return YY_ACTION[i as usize] as i32;
+            }
+
+
+            fn yy_shift #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_with_cb_where {
+                yy.yystack.push(YYStackEntry{stateno: new_state, major: major, minor: minor});
+            }
+            fn yy_parse_failed #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) #yy_generics_with_cb_where {
+                yy.yystack.clear();
+                yy.cb.parse_fail(&mut yy.extra);
+            }
+            fn yy_syntax_error #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yymajor: i32, yyminor: &YYMinorType #yy_generics) #yy_generics_with_cb_where {
+                //TODO send token
+                yy.cb.syntax_error(&mut yy.extra);
+            }
+            fn yy_accept #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) #yy_generics_with_cb_where {
+                yy.yystack.clear();
+                yy.cb.parse_accept(&mut yy.extra);
             }
         });
 
 
         // Beginning here are the reduction cases
-        let mut yyreduce_str = format!("fn g_yy_reduce<CB: PomeloCallback<{}>>(yy: &mut Parser<CB>, yyruleno: i32) {{
-            let yygotominor: YYMinorType = match yyruleno {{
-        ", yyextratype.into_token_stream());
+        let mut yyreduce_str = format!("fn yy_reduce {}(yy: &mut Parser {}, yyruleno: i32) {} {{
+            let yygotominor: YYMinorType {} = match yyruleno {{",
+                tokens_to_string(&yy_generics_with_cb_impl),
+                tokens_to_string(&yy_generics_with_cb),
+                tokens_to_string(&yy_generics_with_cb_where),
+                tokens_to_string(&yy_generics));
 
         /* Generate code which execution during each REDUCE action */
         /* First output rules other than the default: rule */
@@ -2287,18 +2287,18 @@ impl Lemon {
         yyreduce_str += "_ => unreachable!(),
                 };
                 let yygoto = YY_RULE_INFO[yyruleno as usize] as i32;
-                let yyact = yy.find_reduce_action(yygoto);
+                let yyact = yy_find_reduce_action(yy, yygoto);
                 if yyact < YYNSTATE {
-                    yy.yy_shift(yyact, yygoto, yygotominor);
+                    yy_shift(yy, yyact, yygoto, yygotominor);
                 } else {
                     assert!(yyact == YYNSTATE + YYNRULE + 1);
-                    yy.yy_accept();
+                    yy_accept(yy);
                 }
             }";
         //println!("---------------\n{}\n----------------\n", yyreduce_str);
         let yyreduce_fn : syn::ItemFn = syn::parse_str(&yyreduce_str).unwrap();
-        src.extend(yyreduce_fn.into_token_stream());
-        
+        yyreduce_fn.to_tokens(&mut src);
+
         Ok(src)
     }
 
@@ -2337,7 +2337,7 @@ impl Lemon {
         code += "let ref mut extra = yy.extra;\n";
         code += "let yyres : ";
         if let Some(ref dt) = lhs.data_type {
-            code += &dt.into_token_stream().to_string();
+            code += &tokens_to_string(dt);
         } else {
             code += "()";
         }
