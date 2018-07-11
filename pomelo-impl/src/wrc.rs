@@ -34,7 +34,7 @@ impl<T: ?Sized> From<Weak<T>> for WRc<T> {
 }
 
 impl<T: ?Sized> WRc<T> {
-    pub fn unwrap(&self) -> Rc<T> {
+    pub fn upgrade(&self) -> Rc<T> {
         self.w.upgrade().unwrap()
     }
 }
