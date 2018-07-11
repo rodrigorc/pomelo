@@ -1,4 +1,4 @@
-pub use syn::{Ident, Type};
+pub use syn::{Ident, Type, ItemEnum};
 pub use proc_macro2::{Group, TokenStream};
 
 #[derive(Debug, Copy, Clone)]
@@ -18,6 +18,7 @@ pub enum Decl {
     Fallback(Ident, Vec<Ident>),
     Wildcard(Ident),
     TokenClass(Ident, Vec<Ident>),
+    Token(ItemEnum),
     Rule {
         lhs: Ident,
         rhs: Vec<(Vec<Ident>, Option<Ident>)>,

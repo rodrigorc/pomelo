@@ -225,6 +225,7 @@ struct State {
 
 #[derive(Debug)]
 pub struct Lemon {
+    token_enum: Option<ItemEnum>,       //The enum Token{}, if specified with %token
     states: Vec<Rc<RefCell<State>>>,     //Table of states sorted by state number
     rules: Vec<Rc<RefCell<Rule>>>,        //List of all rules
     nsymbol: usize,
@@ -510,6 +511,7 @@ impl Lemon {
         let err_sym = Lemon::symbol_new(&mut symbols, "error", NewSymbolType::NonTerminal);
 
         let mut lem = Lemon {
+            token_enum: None,
             states: Vec::new(),
             rules: Vec::new(),
             nsymbol: 0,
@@ -1640,6 +1642,13 @@ impl Lemon {
                     unreachable!();
                 };
             }
+            Decl::Token(e) => {
+                if self.token_enum.is_some() {
+                    return error("%token redeclared");
+                }
+                self.token_enum = Some(e);
+                //TODO
+            }
             Decl::Rule{ lhs, rhs, action, prec } => {
                 if !is_lowercase(&lhs) {
                     return error("LHS of rule must be non-terminal");
@@ -1780,13 +1789,28 @@ impl Lemon {
             };
         }
 
+        let mut yytoken = match self.token_enum {
+            Some(ref e) => e.clone(),
+            None => parse_quote!{ pub enum Token{} },
+        };
+
+        if !yytoken.variants.is_empty() {
+            return error("Token enum declaration must be empty");
+        }
+
+        let ref yy_generics = yytoken.generics.params;
+
         /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
-        let mut yyminortype_str = String::from("enum YYMinorType { YY0,");
+        let mut yyminortype_str = if yy_generics.is_empty()  {
+            String::from("enum YYMinorType { YY0,")
+        } else {
+            format!("enum YYMinorType<{}> {{ YY0,", yy_generics.into_token_stream())
+        };
         for (k, v) in &types {
             yyminortype_str += &format!("YY{}({}),", v, k.into_token_stream());
         }
         yyminortype_str += "}";
-        let yyminortype_enum : syn::ItemEnum = syn::parse_str(&yyminortype_str).unwrap();
+        let yyminortype_enum : ItemEnum = syn::parse_str(&yyminortype_str).unwrap();
         src.extend(yyminortype_enum.into_token_stream());
 
         generate_const(&mut src, "YYNSTATE", "i32", self.states.len());
@@ -1886,12 +1910,6 @@ impl Lemon {
             }
         }
         /* Output the yy_action table */
-        //TODO derive
-        let mut yytoken : syn::ItemEnum = parse_quote!{
-            pub enum Token {
-            }
-        };
-
         let yytoken_span = yytoken.brace_token.0;
 
         for i in 1 .. self.nterminal {
@@ -1912,7 +1930,7 @@ impl Lemon {
                 discriminant: None,
             });
         }
-        src.extend(yytoken.into_token_stream());
+        src.extend(yytoken.clone().into_token_stream());
 
         let mut yytoken_str = String::from("
             #[inline]
@@ -2038,24 +2056,30 @@ impl Lemon {
         let unit_type = syn::parse_str("()").unwrap();
         let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
 
+        let mut yy_generics_with_cb_full = yy_generics.clone();
+        yy_generics_with_cb_full.push(parse_quote!{ CB: PomeloCallback<#yyextratype> } );
+
+        let mut yy_generics_with_cb = yy_generics.clone();
+        yy_generics_with_cb.push(parse_quote!{ CB } );
+
         src.extend(quote!{
-            struct YYStackEntry {
+            struct YYStackEntry<#yy_generics> {
                 stateno: i32, /* The state-number */
                 major: i32,     /* The major token value.  This is the code
                                  ** number for the token at this stack level */
-                minor: YYMinorType,    /* The user-supplied minor token value.  This
+                minor: YYMinorType<#yy_generics>,    /* The user-supplied minor token value.  This
                                         ** is the value of the token  */
             }
 
-            pub struct Parser<CB: PomeloCallback<#yyextratype>> {
+            pub struct Parser<#yy_generics_with_cb_full> {
                 yyerrcnt: i32, /* Shifts left before out of the error */
-                yystack: Vec<YYStackEntry>,
+                yystack: Vec<YYStackEntry<#yy_generics>>,
                 extra: #yyextratype,
                 cb: CB,
             }
 
-            impl<CB: PomeloCallback<#yyextratype>> Parser<CB> {
-                pub fn new(extra: #yyextratype , cb: CB) -> Parser<CB> {
+            impl<#yy_generics_with_cb_full> Parser<#yy_generics_with_cb> {
+                pub fn new(extra: #yyextratype , cb: CB) -> Self {
                     let mut p = Parser { yyerrcnt: -1, yystack: Vec::new(), extra: extra, cb};
                     p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0});
                     p
@@ -2071,14 +2095,14 @@ impl Lemon {
                 }
 
                 #[inline]
-                pub fn parse(&mut self, token: Token) {
+                pub fn parse(&mut self, token: Token<#yy_generics>) {
                     self.parse_token(token_value(token))
                 }
                 pub fn parse_eoi(&mut self) {
                     self.parse_token((0, YYMinorType::YY0))
                 }
 
-                fn parse_token(&mut self, (yymajor, yyminor): (i32, YYMinorType)) {
+                fn parse_token(&mut self, (yymajor, yyminor): (i32, YYMinorType<#yy_generics>)) {
                     let yyendofinput = yymajor==0;
                     let mut yyerrorhit = false;
                     while !self.yystack.is_empty() {
@@ -2222,7 +2246,7 @@ impl Lemon {
                     return YY_ACTION[i as usize] as i32;
                 }
 
-                fn yy_shift(&mut self, new_state: i32, major: i32, minor: YYMinorType) {
+                fn yy_shift(&mut self, new_state: i32, major: i32, minor: YYMinorType<#yy_generics>) {
                     self.yystack.push(YYStackEntry{stateno: new_state, major: major, minor: minor});
                 }
                 fn yy_reduce(&mut self, yyruleno: i32) {
@@ -2232,7 +2256,7 @@ impl Lemon {
                     self.yystack.clear();
                     self.cb.parse_fail(&mut self.extra);
                 }
-                fn yy_syntax_error(&mut self, yymajor: i32, yyminor: &YYMinorType) {
+                fn yy_syntax_error(&mut self, yymajor: i32, yyminor: &YYMinorType<#yy_generics>) {
                     //TODO send token
                     self.cb.syntax_error(&mut self.extra);
                 }
@@ -2271,7 +2295,7 @@ impl Lemon {
                     yy.yy_accept();
                 }
             }";
-        println!("---------------\n{}\n----------------\n", yyreduce_str);
+        //println!("---------------\n{}\n----------------\n", yyreduce_str);
         let yyreduce_fn : syn::ItemFn = syn::parse_str(&yyreduce_str).unwrap();
         src.extend(yyreduce_fn.into_token_stream());
         

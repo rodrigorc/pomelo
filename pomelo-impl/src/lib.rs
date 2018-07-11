@@ -119,6 +119,13 @@ named!{parse_declaration -> Decl,
             (Decl::TokenClass(tk, ids))
         )
         |
+        do_parse!(
+            punct!(%) >> custom_keyword!(token) >>
+                e: syn!(ItemEnum) >>
+                punct!(;) >>
+            (Decl::Token(e))
+        )
+        |
         parse_rule
     )
 }
@@ -146,7 +153,7 @@ named!{parse_rhs -> (Vec<Ident>, Option<Ident>),
     do_parse!(
         toks: call!(syn::punctuated::Punctuated::<Ident, Token!(|)>::parse_separated_nonempty) >>
         alias: option!(parse_alias) >>
-        ((toks.into_pairs().map(syn::punctuated::Pair::into_value).collect(), alias))
+        ((toks.into_pairs().map(|x| x.into_value()).collect(), alias))
     )
 }
 

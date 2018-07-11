@@ -24,7 +24,12 @@ macro_rules! pomelo {
 mod tests {
 
     pomelo! {
+        %token
+            #[derive(Debug)]
+            pub enum Token<'a> { };
+
         %type IValue i32;
+        %type SValue &'a str;
         %type expr i32;
         %left Plus Minus;
         %left Neg;
@@ -36,6 +41,7 @@ mod tests {
         expr ::= expr(A) Minus expr(B)  { A - B }
         expr ::= Minus expr(A) [Neg]    { -A }
         expr ::= IValue(A)              { A }
+        expr ::= SValue(S)              { S.len() as i32 }
     }
 
     struct TestCB;
@@ -55,7 +61,9 @@ mod tests {
     #[test]
     fn it_works() {
         use self::parser::*;
+        let x = String::from("abc");
         let mut p = Parser::new(0, TestCB);
+        println!("t={:?}", Token::Plus);
         p.parse(Token::IValue(2));
         p.parse(Token::Plus);
         p.parse(Token::IValue(4));
@@ -63,7 +71,7 @@ mod tests {
         p.parse(Token::Minus);
         p.parse(Token::IValue(1));
         p.parse(Token::Minus);
-        p.parse(Token::IValue(3));
+        p.parse(Token::SValue(&x));
         p.parse_eoi();
         let r = p.into_extra();
         println!("RES {}", r);
