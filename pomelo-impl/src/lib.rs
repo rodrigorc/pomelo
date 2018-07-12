@@ -1,5 +1,4 @@
 #![recursion_limit="256"]
-#![allow(unused_imports)]
 extern crate proc_macro;
 extern crate proc_macro2;
 #[macro_use]
@@ -7,19 +6,17 @@ extern crate syn;
 #[macro_use]
 extern crate quote;
 
-mod wrc;
-mod parser;
 mod decl;
+mod parser;
 
 use decl::*;
 
 use quote::ToTokens;
 
-use proc_macro2::{TokenTree, TokenStream, Spacing, Delimiter, Group};
+use proc_macro2::TokenTree;
 use syn::{Ident, Type};
 
-use syn::buffer::{Cursor, TokenBuffer};
-use syn::synom::Synom;
+use syn::buffer::TokenBuffer;
 
 /// From procedural_masquerade
 #[doc(hidden)]

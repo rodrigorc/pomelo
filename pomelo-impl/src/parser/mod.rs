@@ -2,18 +2,15 @@ use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::io;
-use std::fs;
-use std::path::Path;
 use std::cmp::{self, Ordering};
 use std::fmt;
 
-use wrc::WRc;
 use syn;
 use quote::ToTokens;
 use decl::*;
-use proc_macro2::Span;
-use syn::synom::Synom;
-use syn::buffer::{Cursor, TokenBuffer};
+
+mod wrc;
+use self::wrc::WRc;
 
 type RuleSet = BTreeSet<usize>;
 

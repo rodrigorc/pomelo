@@ -1,4 +1,4 @@
-#![allow(unused_imports)]
+#[allow(unused_imports)]
 #[macro_use]
 extern crate pomelo_impl;
 
