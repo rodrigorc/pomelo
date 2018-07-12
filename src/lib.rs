@@ -3,9 +3,13 @@
 extern crate pomelo_impl;
 
 pub trait PomeloCallback<Extra> {
-    fn syntax_error(&mut self, extra: &mut Extra);
-    fn parse_fail(&mut self, extra: &mut Extra);
-    fn parse_accept(&mut self, extra: &mut Extra);
+    type Error;
+    fn parse_accept(&mut self, _extra: &mut Extra) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn syntax_error(&mut self, _extra: &mut Extra) {
+    }
+    fn parse_fail(&mut self, _extra: &mut Extra) -> Self::Error;
 }
 
 #[macro_export]
@@ -49,35 +53,38 @@ mod tests {
 
     struct TestCB;
     impl PomeloCallback<i32> for TestCB {
-        fn syntax_error(&mut self, _extra: &mut i32) {
-            println!("Syntax error");
+        type Error = String;
+        fn parse_accept(&mut self, extra: &mut i32) -> Result<(), Self::Error> {
+            println!("Parse accepted: {}", *extra);
+            Ok(())
         }
-        fn parse_fail(&mut self, extra: &mut i32) {
+        fn parse_fail(&mut self, extra: &mut i32) -> Self::Error {
             *extra = -1;
             println!("Parse failed");
+            "Parse failed!".to_string()
         }
-        fn parse_accept(&mut self, extra: &mut i32) {
-            println!("Parse accepted: {}", *extra);
+        fn syntax_error(&mut self, _extra: &mut i32) {
+            println!("Syntax error");
         }
     }
 
     #[test]
-    fn it_works() {
+    fn it_works() -> Result<(), String> {
         use self::parser::*;
         let x = String::from("abc");
         let mut p = Parser::new(0, TestCB);
         //println!("t={:?}", Token::Plus);
-        p.parse(Token::IValue(2));
-        p.parse(Token::Plus);
-        p.parse(Token::IValue(4));
-        p.parse(Token::Plus);
-        p.parse(Token::Minus);
-        p.parse(Token::IValue(1));
-        p.parse(Token::Minus);
-        p.parse(Token::SValue(&x[..]));
-        p.parse_eoi();
-        let r = p.into_extra();
+        p.parse(Token::IValue(2))?;
+        p.parse(Token::Plus)?;
+        p.parse(Token::IValue(4))?;
+        p.parse(Token::Plus)?;
+        p.parse(Token::Minus)?;
+        p.parse(Token::IValue(1))?;
+        p.parse(Token::Minus)?;
+        p.parse(Token::SValue(&x[..]))?;
+        let r = p.parse_eoi()?;
         println!("RES {}", r);
         assert!(r == 2);
+        Ok(())
     }
 }

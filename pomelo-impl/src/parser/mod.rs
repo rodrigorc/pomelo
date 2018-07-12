@@ -536,19 +536,12 @@ impl Lemon {
         Ok(lem)
     }
     pub fn build(&mut self) -> io::Result<TokenStream> {
-        println!("--> prepare");
         self.prepare();
-        println!("--> find rule prec");
         self.find_rule_precedences();
-        println!("--> find first sets");
         self.find_first_sets();
-        println!("--> find states");
         self.find_states()?;
-        println!("--> find links");
         self.find_links();
-        println!("--> find follow sets");
         self.find_follow_sets();
-        println!("--> find actions");
         self.find_actions()?;
 
         if self.nconflict > 0 {
@@ -556,12 +549,9 @@ impl Lemon {
             return error("Parsing conflicts");
         }
 
-        println!("--> compress ");
         self.compress_tables();
-        println!("--> resort ");
         self.resort_states();
 
-        println!("--> generate ");
         let src = self.generate_source()?;
 
         //println!("{:?}", self);
@@ -2091,18 +2081,25 @@ impl Lemon {
                 pub fn extra_mut(&mut self) -> &mut #yyextratype {
                     &mut self.extra
                 }
-                pub fn parse(&mut self, token: Token #yy_generics) {
+                pub fn parse(&mut self, token: Token #yy_generics) -> Result<(), CB::Error> {
                     let (a, b) = token_value(token);
                     yy_parse_token(self, a, b)
                 }
-                pub fn parse_eoi(&mut self) {
-                    yy_parse_token(self, 0, YYMinorType::YY0)
+                pub fn parse_eoi(mut self) -> Result<#yyextratype, CB::Error> {
+                    yy_parse_token(&mut self, 0, YYMinorType::YY0)?;
+                    Ok(self.extra)
                 }
             }
 
-            fn yy_parse_token #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yymajor: i32, yyminor: YYMinorType #yy_generics) #yy_generics_with_cb_where {
+            fn yy_parse_token #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb,
+                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), CB::Error>
+                #yy_generics_with_cb_where {
                 let yyendofinput = yymajor==0;
                 let mut yyerrorhit = false;
+                if yy.yystack.is_empty() {
+                    panic!("Cannot call parse after failure");
+                }
+
                 while !yy.yystack.is_empty() {
                     let yyact = yy_find_shift_action(yy, yymajor);
                     if yyact < YYNSTATE {
@@ -2111,7 +2108,7 @@ impl Lemon {
                         yy.yyerrcnt -= 1;
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
-                        yy_reduce(yy, yyact - YYNSTATE);
+                        yy_reduce(yy, yyact - YYNSTATE)?;
                     } else {
                         /* A syntax error has occurred.
                          ** The response to an error depends upon whether or not the
@@ -2153,8 +2150,7 @@ impl Lemon {
                                     yy.yystack.pop().unwrap();
                                 }
                                 if yy.yystack.is_empty() || yyendofinput {
-                                    yy_parse_failed(yy);
-                                    break;
+                                    return Err(yy_parse_failed(yy));
                                 }
                             }
                             yy.yyerrcnt = 3;
@@ -2174,12 +2170,13 @@ impl Lemon {
                             }
                             yy.yyerrcnt = 3;
                             if yyendofinput {
-                                yy_parse_failed(yy);
+                                return Err(yy_parse_failed(yy));
                             }
                             break;
                         }
                     }
                 }
+                Ok(())
             }
 
             /*
@@ -2247,23 +2244,27 @@ impl Lemon {
             fn yy_shift #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_with_cb_where {
                 yy.yystack.push(YYStackEntry{stateno: new_state, major: major, minor: minor});
             }
-            fn yy_parse_failed #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) #yy_generics_with_cb_where {
+            fn yy_parse_failed #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) -> CB::Error
+                #yy_generics_with_cb_where {
                 yy.yystack.clear();
-                yy.cb.parse_fail(&mut yy.extra);
+                yy.cb.parse_fail(&mut yy.extra)
             }
-            fn yy_syntax_error #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yymajor: i32, yyminor: &YYMinorType #yy_generics) #yy_generics_with_cb_where {
+            fn yy_syntax_error #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yymajor: i32, yyminor: &YYMinorType #yy_generics)
+                #yy_generics_with_cb_where {
                 //TODO send token
                 yy.cb.syntax_error(&mut yy.extra);
             }
-            fn yy_accept #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) #yy_generics_with_cb_where {
+            fn yy_accept #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) -> Result<(), CB::Error>
+                #yy_generics_with_cb_where {
                 yy.yystack.clear();
-                yy.cb.parse_accept(&mut yy.extra);
+                yy.cb.parse_accept(&mut yy.extra)
             }
         });
 
 
         // Beginning here are the reduction cases
-        let mut yyreduce_str = format!("fn yy_reduce {}(yy: &mut Parser {}, yyruleno: i32) {} {{
+        let mut yyreduce_str = format!("fn yy_reduce {}(yy: &mut Parser {}, yyruleno: i32) -> Result<(), CB::Error>
+            {} {{
             let yygotominor: YYMinorType {} = match yyruleno {{",
                 tokens_to_string(&yy_generics_with_cb_impl),
                 tokens_to_string(&yy_generics_with_cb),
@@ -2287,9 +2288,10 @@ impl Lemon {
                 let yyact = yy_find_reduce_action(yy, yygoto);
                 if yyact < YYNSTATE {
                     yy_shift(yy, yyact, yygoto, yygotominor);
+                    Ok(())
                 } else {
                     assert!(yyact == YYNSTATE + YYNRULE + 1);
-                    yy_accept(yy);
+                    yy_accept(yy)
                 }
             }";
         //println!("---------------\n{}\n----------------\n", yyreduce_str);
