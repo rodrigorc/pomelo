@@ -74,14 +74,25 @@ mod tests {
         let x = String::from("abc");
         let mut p = Parser::new(0, TestCB);
         //println!("t={:?}", Token::Plus);
-        p.parse(Token::IValue(2))?;
-        p.parse(Token::Plus)?;
-        p.parse(Token::IValue(4))?;
-        p.parse(Token::Plus)?;
-        p.parse(Token::Minus)?;
-        p.parse(Token::IValue(1))?;
-        p.parse(Token::Minus)?;
-        p.parse(Token::SValue(&x[..]))?;
+        let toks = vec![
+            Token::IValue(2),
+            Token::Plus,
+            Token::IValue(4),
+            Token::Plus,
+            Token::Minus,
+            Token::IValue(1),
+            Token::Minus,
+            Token::SValue(&x[..]),
+        ];
+        for tok in toks.into_iter() {
+            p = p.parse(tok)?;
+        }
+        for i in 0..10000000 {
+            p = p.parse(Token::Plus)?;
+            p = p.parse(Token::IValue(i))?;
+            p = p.parse(Token::Minus)?;
+            p = p.parse(Token::IValue(i))?;
+        }
         let r = p.parse_eoi()?;
         println!("RES {}", r);
         assert!(r == 2);
