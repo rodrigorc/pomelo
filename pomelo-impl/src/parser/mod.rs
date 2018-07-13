@@ -222,6 +222,7 @@ struct State {
 
 #[derive(Debug)]
 pub struct Lemon {
+    includes: Vec<Item>,
     token_enum: Option<ItemEnum>,       //The enum Token{}, if specified with %token
     states: Vec<Rc<RefCell<State>>>,     //Table of states sorted by state number
     rules: Vec<Rc<RefCell<Rule>>>,        //List of all rules
@@ -508,6 +509,7 @@ impl Lemon {
         let err_sym = Lemon::symbol_new(&mut symbols, "error", NewSymbolType::NonTerminal);
 
         let mut lem = Lemon {
+            includes: Vec::new(),
             token_enum: None,
             states: Vec::new(),
             rules: Vec::new(),
@@ -1543,6 +1545,9 @@ impl Lemon {
     fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: Decl) -> io::Result<()> {
         //println!("PARSE {:?}", decl);
         match decl {
+            Decl::Include(code) => {
+                self.includes.extend(code);
+            }
             Decl::Type(id, ty) => {
                 let nst = if is_uppercase(&id) {
                     NewSymbolType::Terminal
@@ -1711,7 +1716,13 @@ impl Lemon {
             #![allow(dead_code)]
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
+            use super::PomeloCallback;
+
         });
+
+        for code in &self.includes {
+            code.to_tokens(&mut src);
+        }
 
         /* Generate the defines */
         let yycodetype = minimum_size_type(true, self.nsymbol+1);
@@ -2106,6 +2117,7 @@ impl Lemon {
                         assert!(!yyendofinput);  /* Impossible to shift the $ token */
                         yy_shift(yy, yyact, yymajor, yyminor);
                         yy.yyerrcnt -= 1;
+
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
                         yy_reduce(yy, yyact - YYNSTATE)?;

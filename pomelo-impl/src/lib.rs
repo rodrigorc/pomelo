@@ -67,59 +67,64 @@ pub fn __pomelo_structs_and_impls(input: proc_macro::TokenStream) -> proc_macro:
 named!{parse_declaration -> Decl,
     alt!(
         do_parse!(
-            punct!(%) >> keyword!(type) >> ident: syn!(Ident) >> typ: syn!(Type) >> punct!(;) >>
+            punct!(%) >> keyword!(type) >> ident: syn!(Ident) >> typ: syn!(Type) >> option!(punct!(;)) >>
             (Decl::Type(ident, typ))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(left) >> toks: many0!(syn!(Ident)) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(include) >>
+            code: map!(braces!(many0!(syn!(Item))), |(_,c)| c) >>
+            option!(punct!(;)) >>
+            (Decl::Include(code))
+        )
+        |
+        do_parse!(
+            punct!(%) >> custom_keyword!(left) >> toks: many0!(syn!(Ident)) >> option!(punct!(;)) >>
             (Decl::Assoc(Associativity::Left, toks))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(right) >> toks: many0!(syn!(Ident)) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(right) >> toks: many0!(syn!(Ident)) >> option!(punct!(;)) >>
             (Decl::Assoc(Associativity::Right, toks))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(nonassoc) >> toks: many0!(syn!(Ident)) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(nonassoc) >> toks: many0!(syn!(Ident)) >> option!(punct!(;)) >>
             (Decl::Assoc(Associativity::None, toks))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(default_type) >> typ: syn!(Type) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(default_type) >> typ: syn!(Type) >> option!(punct!(;)) >>
             (Decl::DefaultType(typ))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(extra_argument) >> typ: syn!(Type) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(extra_argument) >> typ: syn!(Type) >> option!(punct!(;)) >>
             (Decl::ExtraArgument(typ))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(start_symbol) >> id: syn!(Ident) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(start_symbol) >> id: syn!(Ident) >> option!(punct!(;)) >>
             (Decl::StartSymbol(id))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(fallback) >> fallback: syn!(Ident) >> ids: many0!(syn!(Ident)) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(fallback) >> fallback: syn!(Ident) >> ids: many0!(syn!(Ident)) >> option!(punct!(;)) >>
             (Decl::Fallback(fallback, ids))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(wildcard) >> id: syn!(Ident) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(wildcard) >> id: syn!(Ident) >> option!(punct!(;)) >>
             (Decl::Wildcard(id))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(token_class) >> tk: syn!(Ident) >> ids: many0!(syn!(Ident)) >> punct!(;) >>
+            punct!(%) >> custom_keyword!(token_class) >> tk: syn!(Ident) >> ids: many0!(syn!(Ident)) >> option!(punct!(;)) >>
             (Decl::TokenClass(tk, ids))
         )
         |
         do_parse!(
-            punct!(%) >> custom_keyword!(token) >>
-                e: syn!(ItemEnum) >>
-                punct!(;) >>
+            punct!(%) >> custom_keyword!(token) >> e: syn!(ItemEnum) >> option!(punct!(;)) >>
             (Decl::Token(e))
         )
         |
@@ -132,7 +137,6 @@ named!{parse_rule -> Decl,
         lhs: syn!(Ident) >>
         punct!(::) >> punct!(=) >>
         rhs: many0!(parse_rhs) >>
-        prec: option!(parse_precedence_in_rule) >>
         action: alt!(
             do_parse!(
                 //punct!(=>) >>
@@ -140,8 +144,10 @@ named!{parse_rule -> Decl,
                 (Some(action))
             )
             |
-            punct!(;) => { |_| None }
+            epsilon!() => { |_| None }
         ) >>
+        prec: option!(parse_precedence_in_rule) >>
+        option!(punct!(;)) >>
         (Decl::Rule { lhs, rhs, action, prec })
     )
 }

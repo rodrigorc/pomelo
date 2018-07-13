@@ -1,4 +1,4 @@
-pub use syn::{Ident, Type, ItemEnum};
+pub use syn::{Ident, Type, Item, ItemEnum};
 pub use proc_macro2::{Group, TokenStream};
 use quote;
 
@@ -11,6 +11,7 @@ pub enum Associativity {
 
 #[derive(Debug)]
 pub enum Decl {
+    Include(Vec<Item>),
     Type(Ident, Type),
     Assoc(Associativity, Vec<Ident>),
     DefaultType(Type),

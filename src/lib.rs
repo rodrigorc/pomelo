@@ -15,7 +15,6 @@ pub trait PomeloCallback<Extra> {
 #[macro_export]
 macro_rules! pomelo {
     ($($body:tt)*) => {
-        use PomeloCallback;
         #[allow(unused)]
         #[derive(__pomelo_impl)]
         enum ProceduralMasqueradeDummyType {
@@ -26,12 +25,16 @@ macro_rules! pomelo {
 
 #[cfg(test)]
 mod tests {
+    use super::PomeloCallback;
 
     pomelo! {
+        %include {
+            use std::fmt::Display;
+        };
         %token
-            //#[derive(Debug)]
+            #[derive(Debug)]
             pub enum Token<'a, 'b: 'a, T: 'a + 'b>
-                where T: ::std::fmt::Display { };
+                where T: Display { };
 
         %type PHANTOM1 ::std::marker::PhantomData<&'a T>;
         %type PHANTOM2 ::std::marker::PhantomData<&'b T>;
@@ -46,7 +49,7 @@ mod tests {
         input ::= expr(A)               { *extra = A; }
         expr ::= expr(A) Plus expr(B)   { A + B }
         expr ::= expr(A) Minus expr(B)  { A - B }
-        expr ::= Minus expr(A) [Neg]    { -A }
+        expr ::= Minus expr(A)          { -A } [Neg]
         expr ::= IValue(A)              { A }
         expr ::= SValue(S)              { S.to_string().len() as i32 }
     }
@@ -85,13 +88,13 @@ mod tests {
             Token::SValue(&x[..]),
         ];
         for tok in toks.into_iter() {
-            p = p.parse(tok)?;
+            p.parse(tok)?;
         }
         for i in 0..10000000 {
-            p = p.parse(Token::Plus)?;
-            p = p.parse(Token::IValue(i))?;
-            p = p.parse(Token::Minus)?;
-            p = p.parse(Token::IValue(i))?;
+            p.parse(Token::Plus)?;
+            p.parse(Token::IValue(i))?;
+            p.parse(Token::Minus)?;
+            p.parse(Token::IValue(i))?;
         }
         let r = p.parse_eoi()?;
         println!("RES {}", r);
