@@ -238,6 +238,64 @@ pub struct Lemon {
     start: Option<String>,
 }
 
+impl fmt::Display for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "SYM {} {}", self.index, self.name)?;
+        if let Some(ref assoc) = self.assoc {
+            writeln!(f, "    assoc {:?}", assoc)?;
+        }
+        match self.typ {
+            Terminal => {
+                writeln!(f, "    T")?;
+            }
+            NonTerminal{ rules: ref _rules, ref first_set, ref lambda } => {
+                writeln!(f, "    N l:{}", lambda)?;
+                writeln!(f, "      FS:{:?}", first_set)?;
+
+            }
+            MultiTerminal{..} => {
+                writeln!(f, "    MT")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let r = self.rule.upgrade();
+        let r = r.borrow();
+        writeln!(f, "    R:{}.{}", r.index, self.dot)?;
+        writeln!(f, "    FWS:{:?}", self.fws)?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "STA {}", self.state_num)?;
+        for c in &self.cfp {
+            let c = c.borrow();
+            write!(f, "{}", c)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Lemon {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for s in &self.symbols {
+            let s = s.borrow();
+            write!(f, "{}", s)?;
+        }
+        for s in &self.states {
+            let s = s.borrow();
+            write!(f, "{}", s)?;
+        }
+        Ok(())
+    }
+}
+
 struct ParserData {
     precedence: i32,
 }
@@ -545,6 +603,7 @@ impl Lemon {
         self.find_links();
         self.find_follow_sets();
         self.find_actions()?;
+        //println!("LEMON\n{}", self);
 
         if self.nconflict > 0 {
             self.report_output();
@@ -915,25 +974,24 @@ impl Lemon {
             progress = false;
             for stp in &self.states {
                 for cfp in &stp.borrow().cfp {
-                    let mut cfp = cfp.borrow_mut();
-                    match cfp.status {
-                        CfgStatus::Complete => (),
-                        CfgStatus::Incomplete => {
-                            for plp in &cfp.fplp {
-                                let mut fws = cfp.fws.clone();
-
-                                let plp = plp.upgrade();
-                                let mut plp = plp.borrow_mut();
-                                let n = plp.fws.len();
-                                plp.fws.append(&mut fws);
-                                if plp.fws.len() > n {
-                                    plp.status = CfgStatus::Incomplete;
-                                    progress = true;
-                                }
-                            }
-                            cfp.status = CfgStatus::Complete;
+                    let (fws, fplp) = {
+                        let mut cfp = cfp.borrow();
+                        if let CfgStatus::Complete = cfp.status {
+                            continue;
+                        }
+                        (cfp.fws.clone(), cfp.fplp.clone())
+                    };
+                    for plp in &fplp {
+                        let plp = plp.upgrade();
+                        let mut plp = plp.borrow_mut();
+                        let n = plp.fws.len();
+                        plp.fws.append(&mut fws.clone());
+                        if plp.fws.len() > n {
+                            plp.status = CfgStatus::Incomplete;
+                            progress = true;
                         }
                     }
+                    cfp.borrow_mut().status = CfgStatus::Complete;
                 }
             }
         }
@@ -1426,7 +1484,8 @@ impl Lemon {
                             let xsp = xsp.borrow();
                             match xsp.typ {
                                 Terminal => {
-                                    newcfp.borrow_mut().fws.insert(xsp.index);
+                                    let mut newcfp = newcfp.borrow_mut();
+                                    newcfp.fws.insert(xsp.index);
                                     broken = true;
                                     break;
                                 }
@@ -1440,8 +1499,9 @@ impl Lemon {
                                     break;
                                 }
                                 NonTerminal{ ref first_set, lambda, ..} => {
-                                    newcfp.borrow_mut().fws.append(&mut first_set.clone());
-                                    if lambda {
+                                    let mut newcfp = newcfp.borrow_mut();
+                                    newcfp.fws.append(&mut first_set.clone());
+                                    if !lambda {
                                         broken = true;
                                         break;
                                     }
