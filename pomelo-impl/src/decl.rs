@@ -1,4 +1,4 @@
-pub use syn::{Ident, Type, Item, ItemEnum};
+pub use syn::{Ident, Type, Item, ItemEnum, Block};
 pub use proc_macro2::{Group, TokenStream};
 use quote;
 
@@ -24,7 +24,7 @@ pub enum Decl {
     Rule {
         lhs: Ident,
         rhs: Vec<(Vec<Ident>, Option<Ident>)>,
-        action: Option<Group>,
+        action: Option<Block>,
         prec: Option<Ident>,
     }
 }

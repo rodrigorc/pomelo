@@ -12,16 +12,7 @@ pub trait PomeloCallback<Extra> {
     fn parse_fail(&mut self, _extra: &mut Extra) -> Self::Error;
 }
 
-#[macro_export]
-macro_rules! pomelo {
-    ($($body:tt)*) => {
-        #[allow(unused)]
-        #[derive(__pomelo_impl)]
-        enum ProceduralMasqueradeDummyType {
-            Input = (0,stringify!( { $($body)* })).0
-        }
-    };
-}
+pub use pomelo_impl::pomelo;
 
 #[cfg(test)]
 mod tests;

@@ -41,7 +41,7 @@ struct Rule {
     lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
     rhs: Vec<(WRc<RefCell<Symbol>>, Option<String>)>,   //RHS symbols and aliases
-    code: Option<Group>,//The code executed when this rule is reduced
+    code: Option<Block>,//The code executed when this rule is reduced
     prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
     index: usize,         //An index number for this rule
     can_reduce: bool,   //True if this rule is ever reduced
@@ -1967,7 +1967,7 @@ impl Lemon {
             }
         }
         /* Output the yy_action table */
-        let yytoken_span = yytoken.brace_token.0;
+        let yytoken_span = yytoken.brace_token.span;
 
         for i in 1 .. self.nterminal {
             let ref s = self.symbols[i];
@@ -2464,7 +2464,7 @@ impl Lemon {
         code += ") => {\n";
 
         if let Some(ref rule_code) = rp.code {
-            code += &rule_code.to_string();
+            code += &tokens_to_string(rule_code);
         }
 
         if refutable {
