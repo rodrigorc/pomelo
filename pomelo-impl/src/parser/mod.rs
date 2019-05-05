@@ -436,7 +436,7 @@ impl ActTab {
                  ** aLookahead[] transaction.  Leave i set to the offset of the hole.
                  ** If no holes are found, i is left at self.n_action, which means the
                  ** transaction will be appended. */
-                let mut r = None; //self.a_action.len();
+                let mut r = self.a_action.len();
            'ia: for i in 0 .. self.a_action.len() + max_lookahead {
                     for jla in &at2.a_lookahead {
                         let k = jla.lookahead - min_lookahead + i;
@@ -452,11 +452,11 @@ impl ActTab {
                         };
                         if ja == (j as i32 + min_lookahead as i32 - i as i32) { continue 'ia }
                     }
-                    r = Some(i);
+                    r = i;
                     //println!("hole at {}", i);
                     break
                 }
-                r.unwrap()
+                r
             }
             Some(i) => {
                 //println!("matched at {}", i);
@@ -612,9 +612,7 @@ impl Lemon {
 
         self.compress_tables();
         self.resort_states();
-
         let src = self.generate_source()?;
-
         //println!("{:?}", self);
         //println!("nsymbol={}, nterminal={}", self.nsymbol, self.nterminal);
         Ok(src)
