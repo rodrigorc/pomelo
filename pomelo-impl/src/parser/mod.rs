@@ -7,10 +7,10 @@ use std::fmt;
 
 use syn;
 use quote::ToTokens;
-use decl::*;
+use crate::decl::*;
 
 mod wrc;
-use self::wrc::WRc;
+use wrc::WRc;
 
 type RuleSet = BTreeSet<usize>;
 
@@ -57,7 +57,7 @@ enum SymbolType {
     },
     MultiTerminal(Vec<WRc<RefCell<Symbol>>>), //constituent symbols if MultiTerminal
 }
-use self::SymbolType::*;
+use SymbolType::*;
 
 #[derive(Debug)]
 struct Symbol {
@@ -151,7 +151,7 @@ enum EAction {
 }
 
 fn eaction_cmp(a: &EAction, b: &EAction) -> Ordering {
-    use self::EAction::*;
+    use EAction::*;
 
     match a {
         Shift(ref sa) => match b {
@@ -973,7 +973,7 @@ impl Lemon {
             for stp in &self.states {
                 for cfp in &stp.borrow().cfp {
                     let (fws, fplp) = {
-                        let mut cfp = cfp.borrow();
+                        let cfp = cfp.borrow();
                         if let CfgStatus::Complete = cfp.status {
                             continue;
                         }
@@ -1006,7 +1006,7 @@ impl Lemon {
             let mut aps = Vec::new();
             let mut stp = stp.borrow_mut();
             for cfp in &stp.cfp {
-                let mut cfp = cfp.borrow_mut();
+                let cfp = cfp.borrow_mut();
                 let rule = cfp.rule.upgrade();
                 if cfp.dot == rule.borrow().rhs.len() { /* Is dot at extreme right? */
                     for j in 0 .. self.nterminal {
@@ -1092,7 +1092,7 @@ impl Lemon {
      ** function won't work if apx->type==REDUCE and apy->type==SHIFT.
      */
     fn resolve_conflict(apx: &mut Action, apy: &mut Action) -> bool {
-        use self::EAction::*;
+        use EAction::*;
         let (err, ax, ay) = match (&mut apx.x, &mut apy.x) {
             (Shift(x), Shift(y)) => {
                 (true, Shift(x.clone()), SSConflict(y.clone()))
@@ -1291,7 +1291,7 @@ impl Lemon {
      ** Return None if no action should be generated.
      */
     fn compute_action(&self, ap: &Action) -> Option<usize> {
-        use self::EAction::*;
+        use EAction::*;
         let act = match &ap.x {
             Shift(ref stp) => {
                 let stp = stp.upgrade();
@@ -1354,7 +1354,7 @@ impl Lemon {
             state_info += "\n";
             for ap in &stp.ap {
                 let ap = ap.borrow();
-                use self::EAction::*;
+                use EAction::*;
                 let sp = ap.sp.upgrade();
                 let sp = sp.borrow();
                 match ap.x {
@@ -2345,7 +2345,7 @@ impl Lemon {
         /* First output rules other than the default: rule */
         //TODO avoid dumping the same code twice
         for rp in &self.rules {
-            let mut rp = rp.borrow();
+            let rp = rp.borrow();
             let code = self.translate_code(&rp)?;
             yyreduce_str += &format!(" {} => {{ {} }}", rp.index, code);
         }

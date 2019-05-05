@@ -42,7 +42,7 @@ pomelo! {
     tree ::= Plus tree(A) { TestTree::Unary('>', Box::new(A)) } [Unary]
 }
 
-use self::parser::parse_tree;
+use pomelo::parse_tree;
 
 #[test]
 fn tree_basic() -> Result<(), String> {

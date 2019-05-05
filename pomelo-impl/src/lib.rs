@@ -22,7 +22,7 @@ pub fn pomelo(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let expanded = lemon.build().expect("error in lemon build");
 
     let x = quote!{
-        mod parser {
+        mod pomelo {
             #expanded
         }
     };

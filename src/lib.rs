@@ -1,5 +1,3 @@
-extern crate pomelo_impl;
-
 pub trait PomeloCallback<Extra> {
     type Error;
     fn parse_accept(&mut self, _extra: &mut Extra) -> Result<(), Self::Error> {

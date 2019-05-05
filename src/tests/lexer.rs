@@ -1,5 +1,3 @@
-use super::*;
-
 #[derive(Debug)]
 pub enum TestToken {
     Number(i32),
@@ -8,7 +6,7 @@ pub enum TestToken {
 }
 
 pub fn tokenize(input: &str) -> Vec<TestToken> {
-    use self::TestToken::*;
+    use TestToken::*;
     let mut res = Vec::new();
     let mut prev = None;
     for c in input.chars() {
@@ -52,9 +50,10 @@ pub enum TestTree {
     Group(char, char, Vec<TestTree>),
 }
 
+//Display foir TestTree writes infix notation, because it is unambiguous
 impl std::fmt::Display for TestTree {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        use self::TestTree::*;
+        use TestTree::*;
         match self {
             Integer(i) => write!(fmt, "{}", i)?,
             Ident(s) => write!(fmt, "{}", s)?,

@@ -2,6 +2,7 @@
 name = "pomelo"
 version = "0.1.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 pomelo-impl = { version = "=0.1.0", path="pomelo-impl"}
