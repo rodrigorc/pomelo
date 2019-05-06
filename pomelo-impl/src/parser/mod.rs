@@ -1537,8 +1537,8 @@ impl Lemon {
         }
     }
 
-    fn symbol_new_b(&mut self, name: &[u8], typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
-        Lemon::symbol_new(&mut self.symbols, String::from_utf8_lossy(name).as_ref(), typ)
+    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+        Lemon::symbol_new(&mut self.symbols, name, typ)
     }
     fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
         Lemon::symbol_new(&mut self.symbols, name.to_string().as_ref(), typ)
@@ -1642,7 +1642,7 @@ impl Lemon {
                 self.var_type = Some(ty);
             }
             Decl::ExtraArgument(ty) => {
-                if self.var_type.is_some() {
+                if self.arg.is_some() {
                     return error("Extra argument type already defined");
                 }
                 self.arg = Some(ty);
@@ -1683,14 +1683,14 @@ impl Lemon {
             }
             Decl::TokenClass(tk, ids) => {
                 let tk = self.symbol_new_t(&tk, NewSymbolType::MultiTerminal).upgrade();
-                if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
-                    for id in ids {
-                        let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
+                for id in ids {
+                    let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
+                    if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
                         sub_sym.push(sp.into());
+                    } else {
+                        unreachable!();
                     }
-                } else {
-                    unreachable!();
-                };
+                }
             }
             Decl::Token(e) => {
                 if self.token_enum.is_some() {
@@ -1716,7 +1716,7 @@ impl Lemon {
                         };
                         self.symbol_new_t(&tok, nst)
                     } else {
-                        let mt = self.symbol_new_b(b"", NewSymbolType::MultiTerminal).upgrade();
+                        let mt = self.symbol_new_s("", NewSymbolType::MultiTerminal).upgrade();
                         let mut ss = Vec::new();
                         for tok in toks {
                             if !is_uppercase(&tok) {
@@ -1833,7 +1833,7 @@ impl Lemon {
             }
 
             sp.dt_num = {
-                let cp = sp.data_type.as_ref().or(self.var_type.as_ref());
+                let cp = sp.data_type.as_ref().or(if sp.index < self.nterminal { self.var_type.as_ref() } else { None });
                 match cp {
                     None => None,
                     Some(cp) => {
@@ -1970,8 +1970,8 @@ impl Lemon {
         for i in 1 .. self.nterminal {
             let ref s = self.symbols[i];
             let s = s.borrow();
-            let dt = match s.data_type {
-                Some(ref dt) => {
+            let dt = match s.data_type.as_ref().or(self.var_type.as_ref()) {
+                Some(dt) => {
                     syn::Fields::Unnamed( parse_quote!{ (#dt) })
                 }
                 None => {
