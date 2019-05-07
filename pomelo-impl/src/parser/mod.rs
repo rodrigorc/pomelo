@@ -8,6 +8,7 @@ use std::fmt;
 use syn;
 use quote::ToTokens;
 use crate::decl::*;
+use proc_macro2::Span;
 
 mod wrc;
 use wrc::WRc;
@@ -2331,28 +2332,24 @@ impl Lemon {
             }
         });
 
-
-        // Beginning here are the reduction cases
-        let mut yyreduce_str = format!("fn yy_reduce {}(yy: &mut Parser {}, yyruleno: i32) -> Result<(), CB::Error>
-            {} {{
-            let yygotominor: YYMinorType {} = match yyruleno {{",
-                tokens_to_string(&yy_generics_with_cb_impl),
-                tokens_to_string(&yy_generics_with_cb),
-                tokens_to_string(&yy_generics_with_cb_where),
-                tokens_to_string(&yy_generics));
-
         /* Generate code which execution during each REDUCE action */
         /* First output rules other than the default: rule */
         //TODO avoid dumping the same code twice
+        let mut yyrules = Vec::new();
         for rp in &self.rules {
             let rp = rp.borrow();
             let code = self.translate_code(&rp)?;
-            yyreduce_str += &format!(" {} => {{ {} }}", rp.index, code);
+            let index = rp.index as i32;
+            yyrules.push(quote!(#index => { #code }));
         }
+        yyrules.push(quote!(_ => unreachable!()));
 
-        /* Finally, output the default: rule.  We choose as the default: all
-         ** empty actions. */
-        yyreduce_str += "_ => unreachable!(),
+        let yyreduce_fn = quote!(
+            fn yy_reduce #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yyruleno: i32) -> Result<(), CB::Error>
+                #yy_generics_with_cb_where
+            {
+                let yygotominor: YYMinorType #yy_generics = match yyruleno {
+                    #(#yyrules)*
                 };
                 let yygoto = YY_RULE_INFO[yyruleno as usize] as i32;
                 let yyact = yy_find_reduce_action(yy, yygoto);
@@ -2363,23 +2360,17 @@ impl Lemon {
                     assert!(yyact == YYNSTATE + YYNRULE + 1);
                     yy_accept(yy)
                 }
-            }";
-        //println!("---------------\n{}\n----------------\n", yyreduce_str);
-        let yyreduce_fn : syn::ItemFn = syn::parse_str(&yyreduce_str).unwrap();
+            }
+        );
         yyreduce_fn.to_tokens(&mut src);
 
         Ok(src)
     }
 
-    /*
-     ** zCode is a string that is the action associated with a rule.  Expand
-     ** the symbols in this string so that the refer to elements of the parser
-     ** stack.
-     */
-    fn translate_code(&self, rp: &Rule) -> io::Result<String> {
+    fn translate_code(&self, rp: &Rule) -> io::Result<TokenStream> {
         let lhs = rp.lhs.upgrade();
         let lhs = lhs.borrow();
-        let mut code = String::new();
+        let mut code = TokenStream::new();
         let err_sym = self.err_sym.upgrade();
 
         for (i, r) in rp.rhs.iter().enumerate().rev() {
@@ -2395,23 +2386,24 @@ impl Lemon {
             };
             match dt {
                 Some(_) => {
-                    code += &format!("let yyp{} = yy.yystack.pop().unwrap();\n", i);
+                    let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
+                    code.extend(quote!(let #yypi = yy.yystack.pop().unwrap();));
                 }
                 None => {
-                    code += &format!("yy.yystack.pop().unwrap();\n");
+                    code.extend(quote!(yy.yystack.pop().unwrap();));
                 }
             }
         }
-        let mut refutable = false;
-        code += "let ref mut extra = yy.extra;\n";
-        code += "let yyres : ";
-        if let Some(ref dt) = lhs.data_type {
-            code += &tokens_to_string(dt);
-        } else {
-            code += "()";
-        }
+        code.extend(quote!(let ref mut extra = yy.extra;));
 
-        code += " = match (";
+        let unit = parse_quote!(());
+
+        let yyrestype = match lhs.data_type {
+            Some(ref dt) => dt,
+            None => &unit,
+        };
+
+        let mut yymatch = Vec::new();
         for (i, r) in rp.rhs.iter().enumerate() {
             let r_ = r.0.upgrade();
             let ref alias = r.1;
@@ -2425,8 +2417,8 @@ impl Lemon {
                 _ => r.dt_num,
             };
             if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
-                refutable = true;
-                code += &format!("yyp{}.minor,", i);
+                let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
+                yymatch.push(quote!(#yypi.minor));
             }
             match (alias, &r.typ) {
                 (Some(_), MultiTerminal(ref ss)) => {
@@ -2441,8 +2433,7 @@ impl Lemon {
             }
         }
 
-        code += ") {\n    (";
-
+        let mut yypattern = Vec::new();
         for (_i, r) in rp.rhs.iter().enumerate() {
             let r_ = r.0.upgrade();
             let ref alias = r.1;
@@ -2456,30 +2447,31 @@ impl Lemon {
                 _ => r.dt_num,
             };
             if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
-                code += &format!("YYMinorType::YY{}({}),", dt.unwrap(), tokens_to_string(alias.as_ref().unwrap_or(&parse_quote!(_))));
+                let yydt = Ident::new(&format!("YY{}", dt.unwrap()), Span::call_site());
+                match alias {
+                    Some(ref alias) => yypattern.push(quote!(YYMinorType::#yydt(#alias))),
+                    None => yypattern.push(quote!(YYMinorType::#yydt(_))),
+                }
             }
         }
-        code += ") => {\n";
 
-        if let Some(ref rule_code) = rp.code {
-            code += &tokens_to_string(rule_code);
-        }
-
-        if refutable {
-            code += "\n    }\n    _ => unreachable!()\n};\n";
-        } else {
-            code += "\n    }\n};\n";
-        }
+        let rule_code = rp.code.as_ref();
+        code.extend(quote!(
+            let yyres : #yyrestype = match (#(#yymatch),*) {
+                (#(#yypattern),*) => { #rule_code }
+                _ => unreachable!()
+            };
+        ));
 
         match lhs.dt_num {
             Some(ref dt) => {
-                code += &format!("YYMinorType::YY{}(yyres)\n", dt);
+                let yydt = Ident::new(&format!("YY{}", dt), Span::call_site());
+                code.extend(quote!(YYMinorType::#yydt(yyres)));
             }
             None => {
-                code += " YYMinorType::YY0\n";
+                code.extend(quote!(YYMinorType::YY0));
             }
         }
-
         Ok(code)
     }
 }
