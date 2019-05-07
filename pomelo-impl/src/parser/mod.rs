@@ -5,10 +5,10 @@ use std::io;
 use std::cmp::{self, Ordering};
 use std::fmt;
 
-use syn;
+use proc_macro2::{Span, TokenStream};
+use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant};
 use quote::ToTokens;
 use crate::decl::*;
-use proc_macro2::Span;
 
 mod wrc;
 use wrc::WRc;
@@ -41,7 +41,7 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 struct Rule {
     lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<(WRc<RefCell<Symbol>>, Option<syn::Pat>)>,   //RHS symbols and aliases
+    rhs: Vec<(WRc<RefCell<Symbol>>, Option<Pat>)>,   //RHS symbols and aliases
     code: Option<Block>,//The code executed when this rule is reduced
     prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
     index: usize,         //An index number for this rule
@@ -535,29 +535,6 @@ fn is_uppercase(id: &Ident) -> bool {
 
 fn is_lowercase(id: &Ident) -> bool {
     id.to_string().chars().next().unwrap().is_ascii_lowercase()
-}
-
-fn generate_const<T, D>(src: &mut TokenStream, name: &str, ty: T, value: D)
-where T: fmt::Display,
-      D: fmt::Display {
-
-    let txt = format!("const {}: {} = {};", name, ty, value);
-    let expr : syn::ItemConst = syn::parse_str(&txt).unwrap();
-    expr.to_tokens(src);
-}
-
-fn generate_array<T, D, DI>(src: &mut TokenStream, name: &str, ty: T, data: D)
-where T: fmt::Display,
-      DI: fmt::Display,
-      D: IntoIterator<Item = DI> {
-    let data = data.into_iter().collect::<Vec<_>>();
-    let mut txt = format!("static {}: [{}; {}] = [", name, ty, data.len());
-    for x in data{
-        txt += &format!("{},", x);
-    }
-    txt += "];";
-    let expr : syn::ItemStatic = syn::parse_str(&txt).unwrap();
-    expr.to_tokens(src);
 }
 
 impl Lemon {
@@ -1776,7 +1753,6 @@ impl Lemon {
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
             use super::PomeloCallback;
-
         });
 
         for code in &self.includes {
@@ -1786,13 +1762,7 @@ impl Lemon {
         /* Generate the defines */
         let yycodetype = minimum_size_type(true, self.nsymbol+1);
         let yyactiontype = minimum_size_type(false, self.states.len() + self.rules.len() + 5);
-        src.extend(quote!{
-            type YYCODETYPE = #yycodetype;
-            type YYACTIONTYPE = #yyactiontype;
-        });
-
-        generate_const(&mut src, "YYNOCODE", "i32", self.nsymbol + 1);
-
+        let yynocode = (self.nsymbol + 1) as i32;
         let yywildcard = if let Some(ref wildcard) = self.wildcard {
             let wildcard = wildcard.upgrade();
             let wildcard = wildcard.borrow();
@@ -1804,7 +1774,13 @@ impl Lemon {
             0
         };
 
-        generate_const(&mut src, "YYWILDCARD", "YYCODETYPE", yywildcard);
+        src.extend(quote!{
+            type YYCODETYPE = #yycodetype;
+            type YYACTIONTYPE = #yyactiontype;
+            const YYNOCODE: i32 = #yynocode;
+            const YYWILDCARD: YYCODETYPE = #yywildcard as YYCODETYPE;
+        });
+
         /*
          ** Print the definition of the union used for the parser's data stack.
          ** This union contains fields for every possible data type for tokens
@@ -1857,33 +1833,39 @@ impl Lemon {
         let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
 
         /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
-        let mut yyminortype_str = format!("enum YYMinorType{} {} {{ YY0,",
-                    tokens_to_string(&yy_generics_impl),
-                    tokens_to_string(&yy_generics_where),
-                    );
-        for (k, v) in &types {
-            yyminortype_str += &format!("YY{}({}),", v, tokens_to_string(&k));
-        }
-        yyminortype_str += "}";
-        let yyminortype_enum : ItemEnum = syn::parse_str(&yyminortype_str).unwrap();
-        yyminortype_enum.to_tokens(&mut src);
+        let minor_types = types.iter().map(|(k, v)| {
+            let ident = Ident::new(&format!("YY{}", v), Span::call_site());
+            quote!(#ident(#k))
+        });
+        src.extend(quote!(
+            enum YYMinorType #yy_generics_impl
+                #yy_generics_where
+            {
+                YY0,
+                #(#minor_types),*
+            }
+        ));
 
 
-        generate_const(&mut src, "YYNSTATE", "i32", self.states.len());
-        generate_const(&mut src, "YYNRULE", "i32", self.rules.len());
+        let yynstate = self.states.len() as i32;
+        let yynrule = self.rules.len() as i32;
+        let err_sym = self.err_sym.upgrade();
+        let mut err_sym = err_sym.borrow_mut();
+        err_sym.dt_num = Some(types.len() + 1);
 
-        {
-            let err_sym = self.err_sym.upgrade();
-            let mut err_sym = err_sym.borrow_mut();
-            err_sym.dt_num = Some(types.len() + 1);
+        let yyerrorsymbol = if err_sym.use_cnt > 0 {
+            err_sym.index as i32
+        } else {
+            0
+        };
+        drop(err_sym);
 
-            let yyerrorsymbol = if err_sym.use_cnt > 0 {
-                err_sym.index as i32
-            } else {
-                0
-            };
-            generate_const(&mut src, "YYERRORSYMBOL", "i32", yyerrorsymbol);
-        }
+        src.extend(quote!(
+            const YYNSTATE: i32 = #yynstate;
+            const YYNRULE: i32 = #yynrule;
+            const YYERRORSYMBOL: i32 = #yyerrorsymbol;
+        ));
+
 
         /* Generate the action table and its associates:
          **
@@ -1973,13 +1955,13 @@ impl Lemon {
             let s = s.borrow();
             let dt = match s.data_type.as_ref().or(self.var_type.as_ref()) {
                 Some(dt) => {
-                    syn::Fields::Unnamed( parse_quote!{ (#dt) })
+                    Fields::Unnamed( parse_quote!{ (#dt) })
                 }
                 None => {
-                    syn::Fields::Unit
+                    Fields::Unit
                 }
             };
-            yytoken.variants.push(syn::Variant {
+            yytoken.variants.push(Variant {
                 attrs: vec![],
                 ident: Ident::new(&s.name, yytoken_span),
                 fields: dt,
@@ -1988,96 +1970,99 @@ impl Lemon {
         }
         yytoken.to_tokens(&mut src);
 
-        let mut yytoken_str = format!("
-            #[inline]
-            fn token_value{0}(t: Token{1}) -> (i32, YYMinorType{1}) {2} {{
-                match t {{ ",
-                tokens_to_string(&yy_generics_impl),
-                tokens_to_string(&yy_generics),
-                tokens_to_string(&yy_generics_where));
-        for i in 1 .. self.nterminal {
-            let s = self.symbols[i].borrow();
+        let token_matches = self.symbols.iter().enumerate().take(self.nterminal).skip(1).map(|(i, s)| {
+            let s = s.borrow();
+            let i = i as i32;
+            let name = Ident::new(&s.name, Span::call_site());
             match s.dt_num {
                 Some(dt) => {
-                    yytoken_str += &format!("Token::{}(x) => ({}, YYMinorType::YY{}(x)),", s.name, i, dt);
+                    let yydt = Ident::new(&format!("YY{}", dt), Span::call_site());
+                    quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x)))
                 }
                 None => {
-                    yytoken_str += &format!("Token::{} => ({}, YYMinorType::YY0),", s.name, i);
+                    quote!(Token::#name => (#i, YYMinorType::YY0))
                 }
             }
-        }
-        yytoken_str += "
+        });
+        src.extend(quote!(
+            #[inline]
+            fn token_value #yy_generics_impl(t: Token #yy_generics) -> (i32, YYMinorType #yy_generics)
+                #yy_generics_where
+            {
+                match t {
+                    #(#token_matches),*
                 }
-            }";
-        let yytoken_fn : syn::ItemFn = syn::parse_str(&yytoken_str).unwrap();
-        yytoken_fn.to_tokens(&mut src);
+            }
+        ));
 
-        /* Return the number of entries in the yy_action table */
-        generate_const(&mut src, "YY_ACTTAB_COUNT", "i32", acttab.a_action.len());
-        generate_array(&mut src, "YY_ACTION", &yyactiontype,
-            acttab.a_action.iter().map(|ac| {
+        let yy_action = acttab.a_action.iter().map(|ac| {
                 match ac {
-                    None => self.states.len() + self.rules.len() + 2,
-                    Some(a) => a.action,
+                    None => (self.states.len() + self.rules.len() + 2) as i32,
+                    Some(a) => a.action as i32
                 }
-            })
-        );
+            });
+        let yy_action_len = yy_action.len();
+        src.extend(quote!(static YY_ACTION: [i32; #yy_action_len] = [ #(#yy_action),* ];));
 
         /* Output the yy_lookahead table */
-        generate_array(&mut src, "YY_LOOKAHEAD", &yycodetype,
-            acttab.a_action.iter().map(|ac| {
-                match ac {
+        let yy_lookahead = acttab.a_action.iter().map(|ac| {
+                let a = match ac {
                     None => self.nsymbol,
-                    Some(a) => a.lookahead,
-                }
-            })
-        );
+                    Some(a) => a.lookahead ,
+                };
+                quote!(#a as YYCODETYPE)
+            });
+        let yy_lookahead_len = yy_lookahead.len();
+        src.extend(quote!(static YY_LOOKAHEAD: [YYCODETYPE; #yy_lookahead_len] = [ #(#yy_lookahead),* ];));
 
         /* Output the yy_shift_ofst[] table */
         let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
                         st.borrow().i_tkn_ofst.is_some()
                     ).unwrap();
-        generate_const(&mut src, "YY_SHIFT_USE_DFLT", "i32", min_tkn_ofst - 1);
-        generate_const(&mut src, "YY_SHIFT_COUNT", "i32", n);
-        generate_const(&mut src, "YY_SHIFT_MIN", "i32", min_tkn_ofst);
-        generate_const(&mut src, "YY_SHIFT_MAX", "i32", max_tkn_ofst);
-        generate_array(&mut src, "YY_SHIFT_OFST", minimum_size_type(true, max_tkn_ofst as usize),
-            self.states[0..=n].iter().map(|stp| {
+        let yy_shift_use_dflt = min_tkn_ofst - 1;
+        src.extend(quote!(const YY_SHIFT_USE_DFLT: i32 = #yy_shift_use_dflt;));
+        src.extend(quote!(const YY_SHIFT_COUNT: i32 = #n as i32;));
+        src.extend(quote!(const YY_SHIFT_MIN: i32 = #min_tkn_ofst;));
+        src.extend(quote!(const YY_SHIFT_MAX: i32 = #max_tkn_ofst;));
+        let yy_shift_ofst_type = minimum_size_type(true, max_tkn_ofst as usize);
+        let yy_shift_ofst = self.states[0..=n].iter().map(|stp| {
                 let stp = stp.borrow();
                 let ofst = stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1);
-                ofst
-            })
-        );
+                quote!(#ofst as #yy_shift_ofst_type)
+            });
+        let yy_shift_ofst_len = yy_shift_ofst.len();
+        src.extend(quote!(static YY_SHIFT_OFST: [#yy_shift_ofst_type; #yy_shift_ofst_len] = [ #(#yy_shift_ofst),* ];));
 
         /* Output the yy_reduce_ofst[] table */
         let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
                         st.borrow().i_nt_ofst.is_some()
                     ).unwrap();
-        generate_const(&mut src, "YY_REDUCE_USE_DFLT", "i32", min_nt_ofst - 1);
-        generate_const(&mut src, "YY_REDUCE_COUNT", "i32", n);
-        generate_const(&mut src, "YY_REDUCE_MIN", "i32", min_nt_ofst);
-        generate_const(&mut src, "YY_REDUCE_MAX", "i32", max_nt_ofst);
-        generate_array(&mut src, "YY_REDUCE_OFST", minimum_size_type(true, max_nt_ofst as usize),
-            self.states[0..=n].iter().map(|stp| {
+        let yy_reduce_use_dflt = min_nt_ofst - 1;
+        src.extend(quote!(const YY_REDUCE_USE_DFLT: i32 = #yy_reduce_use_dflt;));
+        src.extend(quote!(const YY_REDUCE_COUNT: i32 = #n as i32;));
+        src.extend(quote!(const YY_REDUCE_MIN: i32 = #min_nt_ofst;));
+        src.extend(quote!(const YY_REDUCE_MAX: i32 = #max_nt_ofst;));
+        let yy_reduce_ofst_type = minimum_size_type(true, max_nt_ofst as usize);
+        let yy_reduce_ofst = self.states[0..=n].iter().map(|stp| {
                 let stp = stp.borrow();
                 let ofst = stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1);
-                ofst
-            })
-        );
+                quote!(#ofst as #yy_reduce_ofst_type)
+            });
+        let yy_reduce_ofst_len = yy_reduce_ofst.len();
+        src.extend(quote!(static YY_REDUCE_OFST: [#yy_reduce_ofst_type; #yy_reduce_ofst_len] = [ #(#yy_reduce_ofst),* ];));
 
-        generate_array(&mut src, "YY_DEFAULT", &yyactiontype,
-            self.states.iter().map(|stp| {
-                let stp = stp.borrow();
-                stp.i_dflt
-            })
-        );
+        let yy_default = self.states.iter().map(|stp| {
+                let dflt = stp.borrow().i_dflt;
+                quote!(#dflt as YYACTIONTYPE)
+            });
+        let yy_default_len = yy_default.len();
+        src.extend(quote!(static YY_DEFAULT: [YYACTIONTYPE; #yy_default_len] = [ #(#yy_default),* ];));
 
         /* Generate the table of fallback tokens. */
         let mx = self.symbols.iter().enumerate().rfind(|(_,sy)|
                         sy.borrow().fallback.is_some()
                     ).map_or(0, |(x,_)| x + 1);
-        generate_array(&mut src, "YY_FALLBACK", "i32",
-            self.symbols[0..mx].iter().map(|p| {
+        let yy_fallback = self.symbols[0..mx].iter().map(|p| {
                 let p = p.borrow();
                 match p.fallback {
                     None => {
@@ -2093,26 +2078,27 @@ impl Lemon {
                                 return error("Fallback token must have the same type or no type at all");
                             }
                         }
-                        Ok(fb.index)
+                        Ok(fb.index as i32)
                     }
                 }
-            }).collect::<Result<Vec<_>,_>>()?
-        );
+            }).collect::<Result<Vec<_>,_>>()?;
+        let yy_fallback_len = yy_fallback.len();
+        src.extend(quote!(static YY_FALLBACK: [i32; #yy_fallback_len] = [ #(#yy_fallback),* ];));
 
         /* Generate the table of rule information
          **
          ** Note: This code depends on the fact that rules are number
          ** sequentually beginning with 0.
          */
-        generate_array(&mut src, "YY_RULE_INFO", &yycodetype,
-            self.rules.iter().map(|rp| {
+        let yy_rule_info = self.rules.iter().map(|rp| {
                 let lhs = rp.borrow().lhs.upgrade();
-                let lhs = lhs.borrow();
-                lhs.index
-            })
-        );
+                let index = lhs.borrow().index;
+                quote!(#index as YYCODETYPE)
+            });
+        let yy_rule_info_len = yy_rule_info.len();
+        src.extend(quote!(static YY_RULE_INFO: [YYCODETYPE; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
 
-        let unit_type = syn::parse_str("()").unwrap();
+        let unit_type = parse_quote!(());
         let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
 
         let mut yy_generics_with_cb = yytoken.generics.clone();
@@ -2268,7 +2254,7 @@ impl Lemon {
                 assert!(look_ahead != YYNOCODE);
                 let i = i + look_ahead;
 
-                if i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead {
+                if i < 0 || i >= YY_ACTION.len() as i32 || YY_LOOKAHEAD[i as usize] as i32 != look_ahead {
                     if look_ahead > 0 {
                         if (look_ahead as usize) < YY_FALLBACK.len() {
                             let fallback = YY_FALLBACK[look_ahead as usize];
@@ -2278,7 +2264,7 @@ impl Lemon {
                         }
                         if YYWILDCARD > 0 {
                             let j = i - look_ahead + (YYWILDCARD as i32);
-                            if j >= 0 && j < YY_ACTTAB_COUNT && YY_LOOKAHEAD[j as usize]==YYWILDCARD {
+                            if j >= 0 && j < YY_ACTION.len() as i32 && YY_LOOKAHEAD[j as usize]==YYWILDCARD {
                                 return YY_ACTION[j as usize] as i32;
                             }
                         }
@@ -2303,10 +2289,10 @@ impl Lemon {
                 assert!(i != YY_REDUCE_USE_DFLT);
                 assert!(look_ahead != YYNOCODE );
                 let i = i + look_ahead;
-                if YYERRORSYMBOL != 0 && (i < 0 || i >= YY_ACTTAB_COUNT || YY_LOOKAHEAD[i as usize] as i32 != look_ahead) {
+                if YYERRORSYMBOL != 0 && (i < 0 || i >= YY_ACTION.len() as i32 || YY_LOOKAHEAD[i as usize] as i32 != look_ahead) {
                     return YY_DEFAULT[stateno as usize] as i32;
                 }
-                assert!(i >= 0 && i < YY_ACTTAB_COUNT);
+                assert!(i >= 0 && i < YY_ACTION.len() as i32);
                 assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
                 return YY_ACTION[i as usize] as i32;
             }
@@ -2396,12 +2382,8 @@ impl Lemon {
         }
         code.extend(quote!(let ref mut extra = yy.extra;));
 
-        let unit = parse_quote!(());
-
-        let yyrestype = match lhs.data_type {
-            Some(ref dt) => dt,
-            None => &unit,
-        };
+        let unit_type = parse_quote!(());
+        let yyrestype = lhs.data_type.as_ref().unwrap_or(&unit_type);
 
         let mut yymatch = Vec::new();
         for (i, r) in rp.rhs.iter().enumerate() {

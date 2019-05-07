@@ -1,6 +1,4 @@
 pub use syn::{Ident, Type, Item, ItemEnum, Block, Pat};
-pub use proc_macro2::{Group, TokenStream};
-use quote;
 
 #[derive(Debug, Copy, Clone)]
 pub enum Associativity {
@@ -27,11 +25,5 @@ pub enum Decl {
         action: Option<Block>,
         prec: Option<Ident>,
     }
-}
-
-pub fn tokens_to_string(t: impl quote::ToTokens) -> String {
-    let mut s = TokenStream::new();
-    t.to_tokens(&mut s);
-    s.to_string()
 }
 
