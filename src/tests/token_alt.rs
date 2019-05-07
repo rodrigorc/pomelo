@@ -7,7 +7,7 @@ pomelo! {
 
     input ::= list(L) { *extra = L; }
     list ::= { Vec::new() }
-    list ::= list(L) One|Two|Three(A) { let mut L = L; L.push(A); L }
+    list ::= list(mut L) One|Two|Three(A) { L.push(A); L }
 }
 
 #[test]

@@ -40,7 +40,7 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 struct Rule {
     lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<(WRc<RefCell<Symbol>>, Option<String>)>,   //RHS symbols and aliases
+    rhs: Vec<(WRc<RefCell<Symbol>>, Option<syn::Pat>)>,   //RHS symbols and aliases
     code: Option<Block>,//The code executed when this rule is reduced
     prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
     index: usize,         //An index number for this rule
@@ -1731,7 +1731,7 @@ impl Lemon {
                         }
                         mt.into()
                     };
-                    let alias = alias.as_ref().map(|id| id.to_string());
+                    //let alias = alias.as_ref().map(|id| tokens_to_string(id));
                     Ok((tok, alias))
                 }).collect::<io::Result<Vec<_>>>()?;
 
@@ -2456,7 +2456,7 @@ impl Lemon {
                 _ => r.dt_num,
             };
             if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
-                code += &format!("YYMinorType::YY{}({}),", dt.unwrap(), alias.as_ref().map_or("_", String::as_str));
+                code += &format!("YYMinorType::YY{}({}),", dt.unwrap(), tokens_to_string(alias.as_ref().unwrap_or(&parse_quote!(_))));
             }
         }
         code += ") => {\n";
