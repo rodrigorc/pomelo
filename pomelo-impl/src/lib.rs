@@ -16,7 +16,7 @@ use syn::parse::{Parse, Result, Error, ParseStream};
 use syn::punctuated::Punctuated;
 
 #[proc_macro]
-pub fn pomelo(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn pomelo_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let Decls(decls) = parse_macro_input!(input);
     let lemon = parser::Lemon::new_from_decls(decls);
     let expanded = lemon.and_then(|mut l| l.build());
