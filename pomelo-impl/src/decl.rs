@@ -1,4 +1,4 @@
-pub use syn::{Ident, Type, Item, ItemEnum, Block, Pat};
+use syn::{Ident, Type, Item, ItemEnum, Block, Pat};
 
 #[derive(Debug, Copy, Clone)]
 pub enum Associativity {

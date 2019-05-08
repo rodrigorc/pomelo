@@ -1,12 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::io;
 use std::cmp::{self, Ordering};
 use std::fmt;
 
 use proc_macro2::{Span, TokenStream};
-use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant};
+use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant, spanned::Spanned};
 use quote::ToTokens;
 use crate::decl::*;
 
@@ -39,6 +38,7 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 
 #[derive(Debug)]
 struct Rule {
+    span: Span,
     lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
     rhs: Vec<(WRc<RefCell<Symbol>>, Option<Pat>)>,   //RHS symbols and aliases
@@ -236,7 +236,7 @@ pub struct Lemon {
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
     var_type: Option<Type>,
-    start: Option<String>,
+    start: Option<Ident>,
 }
 
 impl fmt::Display for Symbol {
@@ -525,8 +525,12 @@ fn minimum_size_type(signed: bool, max: usize) -> Ident {
     }
 }
 
-fn error<T>(msg: &'static str) -> io::Result<T> {
-    Err(io::Error::new(io::ErrorKind::InvalidInput, msg))
+fn error<T>(msg: &'static str) -> syn::Result<T> {
+    Err(syn::Error::new(Span::call_site(), msg))
+}
+
+fn error2<T>(span: Span, msg: &'static str) -> syn::Result<T> {
+    Err(syn::Error::new(span, msg))
 }
 
 fn is_uppercase(id: &Ident) -> bool {
@@ -538,7 +542,7 @@ fn is_lowercase(id: &Ident) -> bool {
 }
 
 impl Lemon {
-    pub fn new_from_decls(decls: Vec<Decl>) -> io::Result<Lemon> {
+    pub fn new_from_decls(decls: Vec<Decl>) -> syn::Result<Lemon> {
         let mut symbols = Vec::new();
 
         Lemon::symbol_new(&mut symbols, "$", NewSymbolType::Terminal);
@@ -573,7 +577,7 @@ impl Lemon {
         Lemon::symbol_new(&mut lem.symbols, "{default}", NewSymbolType::NonTerminal);
         Ok(lem)
     }
-    pub fn build(&mut self) -> io::Result<TokenStream> {
+    pub fn build(&mut self) -> syn::Result<TokenStream> {
         self.prepare();
         self.find_rule_precedences();
         self.find_first_sets();
@@ -740,7 +744,7 @@ impl Lemon {
      ** are added to between some states so that the LR(1) follow sets
      ** can be computed later.
      */
-    fn find_states(&mut self) -> io::Result<()> {
+    fn find_states(&mut self) -> syn::Result<()> {
         /* Find the start symbol */
         let sp = match self.start {
             None => {
@@ -751,9 +755,9 @@ impl Lemon {
                 self.rules.first().unwrap().borrow().lhs.upgrade()
             }
             Some(ref s) => {
-                match self.symbol_find(s) {
+                match self.symbol_find(&s.to_string()) {
                     Some(x) => x,
-                    None => return error("start with unknown symbol"),
+                    None => return error2(s.span(), "start_symbol is unknown"),
                 }
             }
         };
@@ -766,14 +770,14 @@ impl Lemon {
             for (r,_) in &rp.rhs {
                 let r = r.upgrade();
                 if Rc::ptr_eq(&sp, &r) {
-                    return error("start symbol on the RHS of a rule");
+                    return error2(rp.span, "start symbol on the RHS of a rule");
                 }
                 let r = r.borrow();
                 if let MultiTerminal(ref sub_sym) = r.typ {
                     for r2 in sub_sym {
                         let r2 = r2.upgrade();
                         if Rc::ptr_eq(&sp, &r2) {
-                            return error("start symbol on the RHS of a rule");
+                            return error2(rp.span, "start symbol on the RHS of a rule");
                         }
                     }
                 }
@@ -802,7 +806,7 @@ impl Lemon {
     /* Compute the first state.  All other states will be
      ** computed automatically during the computation of the first one.
      ** The returned pointer to the first state is not used. */
-    fn get_state(&mut self, mut bp: ConfigList, cur: ConfigList) -> io::Result<Rc<RefCell<State>>> {
+    fn get_state(&mut self, mut bp: ConfigList, cur: ConfigList) -> syn::Result<Rc<RefCell<State>>> {
         bp.sort_by(config_cmp);
         /* Get a state with the same basis */
         match self.state_find(&bp) {
@@ -842,7 +846,7 @@ impl Lemon {
     /* Construct all successor states to the given state.  A "successor"
      ** state is any state which can be reached by a shift action.
      */
-    fn build_shifts(&mut self, state: &Rc<RefCell<State>>) -> io::Result<()> {
+    fn build_shifts(&mut self, state: &Rc<RefCell<State>>) -> syn::Result<()> {
         /* Each configuration becomes complete after it contibutes to a successor
          ** state.  Initially, all configurations are incomplete */
 
@@ -975,7 +979,7 @@ impl Lemon {
 
     /* Compute the reduce actions, and resolve conflicts.
     */
-    fn find_actions(&mut self) -> io::Result<()> {
+    fn find_actions(&mut self) -> syn::Result<()> {
         /* Add all of the reduce actions
          ** A reduce action is added for each element of the followset of
          ** a configuration which has its dot at the extreme right.
@@ -1005,7 +1009,7 @@ impl Lemon {
 
         /* Add the accepting token */
         let sp = match self.start {
-            Some(ref start) => self.symbol_find(&start).unwrap(),
+            Some(ref start) => self.symbol_find(&start.to_string()).unwrap(),
             None => self.rules.first().unwrap().borrow().lhs.upgrade(),
         };
 
@@ -1049,8 +1053,9 @@ impl Lemon {
             }
         }
         for rp in &self.rules {
-            if !rp.borrow().can_reduce {
-                return error("This rule cannot be reduced");
+            let rp = rp.borrow();
+            if !rp.can_reduce {
+                return error2(rp.span, "This rule cannot be reduced");
             }
         }
         Ok(())
@@ -1434,7 +1439,7 @@ impl Lemon {
     }
 
     /* Compute the closure of the configuration list */
-    fn configlist_closure(&mut self, mut cur: ConfigList) -> io::Result<ConfigList> {
+    fn configlist_closure(&mut self, mut cur: ConfigList) -> syn::Result<ConfigList> {
         let mut i = 0;
         while i < cur.len() {
             //println!("I = {} < {}", i, cur.len());
@@ -1578,7 +1583,7 @@ impl Lemon {
         (b.n_nt_act, b.n_tkn_act, b.state_num).cmp(&(a.n_nt_act, a.n_tkn_act, a.state_num))
     }
 
-    fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: Decl) -> io::Result<()> {
+    fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: Decl) -> syn::Result<()> {
         //println!("PARSE {:?}", decl);
         match decl {
             Decl::Include(code) => {
@@ -1590,12 +1595,12 @@ impl Lemon {
                 } else if is_lowercase(&id) {
                     NewSymbolType::NonTerminal
                 } else {
-                    return error("Symbol name missing");
+                    return error2(id.span(), "Symbol must use only ASCII characters");
                 };
                 let sp = self.symbol_new_t(&id, nst).upgrade();
                 let mut sp = sp.borrow_mut();
                 if sp.data_type.is_some() {
-                    return error("Symbol type already defined");
+                    return error2(id.span(), "Symbol type already defined");
                 }
                 sp.data_type = Some(ty);
             }
@@ -1603,47 +1608,47 @@ impl Lemon {
                 pdt.precedence += 1;
                 for token in ids {
                     if !is_uppercase(&token) {
-                        return error("Precedence must be assigned to a token");
+                        return error2(token.span(), "Precedence cannot be assigned to a non-terminal");
                     }
                     let sp = self.symbol_new_t(&token, NewSymbolType::Terminal).upgrade();
                     let mut b = sp.borrow_mut();
                     match b.assoc {
-                        Some(_) => return error("Symbol has already been given a precedence"),
+                        Some(_) => return error2(token.span(), "Symbol has already been given a precedence"),
                         None => b.assoc = Some(Precedence(pdt.precedence, a)),
                     }
                 }
             }
             Decl::DefaultType(ty) => {
                 if self.var_type.is_some() {
-                    return error("Default type already defined");
+                    return error2(ty.span(), "Default type already defined");
                 }
                 self.var_type = Some(ty);
             }
             Decl::ExtraArgument(ty) => {
                 if self.arg.is_some() {
-                    return error("Extra argument type already defined");
+                    return error2(ty.span(), "Extra argument type already defined");
                 }
                 self.arg = Some(ty);
             }
             Decl::StartSymbol(id) => {
                 if self.start.is_some() {
-                    return error("Start symbol already defined");
+                    return error2(id.span(), "Start symbol already defined");
                 }
-                self.start = Some(id.to_string());
+                self.start = Some(id);
             }
             Decl::Fallback(fb, ids) => {
                     if !is_uppercase(&fb) {
-                        return error("Fallback must be a token");
+                        return error2(fb.span(), "Fallback must be a token");
                     }
                 let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
                 for id in ids {
                     if !is_uppercase(&fb) {
-                        return error("Fallback must be a token");
+                        return error2(fb.span(), "Fallback must be a token");
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal).upgrade();
                     let mut b = sp.borrow_mut();
                     if b.fallback.is_some() {
-                        return error("More than one fallback assigned to token");
+                        return error2(id.span(), "More than one fallback assigned to token");
                     }
                     b.fallback = Some(fallback.clone());
                     self.has_fallback = true;
@@ -1651,10 +1656,10 @@ impl Lemon {
             }
             Decl::Wildcard(id) => {
                 if self.wildcard.is_some() {
-                    return error("Wildcard already defined");
+                    return error2(id.span(), "Wildcard already defined");
                 }
                 if !is_uppercase(&id) {
-                    return error("Wildcard must be a token");
+                    return error2(id.span(), "Wildcard must be a token");
                 }
                 let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                 self.wildcard = Some(sp);
@@ -1672,14 +1677,16 @@ impl Lemon {
             }
             Decl::Token(e) => {
                 if self.token_enum.is_some() {
-                    return error("%token redeclared");
+                    return error2(e.span(), "%token redeclared");
                 }
                 self.token_enum = Some(e);
                 //TODO
             }
             Decl::Rule{ lhs, rhs, action, prec } => {
+                //TODO use proper spans for each RHS
+                let span = lhs.span();
                 if !is_lowercase(&lhs) {
-                    return error("LHS of rule must be non-terminal");
+                    return error2(span, "LHS of rule must be non-terminal");
                 }
                 let lhs = self.symbol_new_t(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, alias)| {
@@ -1690,7 +1697,7 @@ impl Lemon {
                         } else if is_lowercase(&tok) {
                             NewSymbolType::NonTerminal
                         } else {
-                            return error("Invalid token in RHS of rule");
+                            return error2(span, "Invalid token in RHS of rule");
                         };
                         self.symbol_new_t(&tok, nst)
                     } else {
@@ -1698,7 +1705,7 @@ impl Lemon {
                         let mut ss = Vec::new();
                         for tok in toks {
                             if !is_uppercase(&tok) {
-                                return error("Cannot form a compound containing a non-terminal");
+                                return error2(span, "Cannot form a compound containing a non-terminal");
                             }
                             ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                         }
@@ -1711,12 +1718,12 @@ impl Lemon {
                     };
                     //let alias = alias.as_ref().map(|id| tokens_to_string(id));
                     Ok((tok, alias))
-                }).collect::<io::Result<Vec<_>>>()?;
+                }).collect::<syn::Result<Vec<_>>>()?;
 
-                let prec_sym = match prec.as_ref() {
-                    Some(id) => {
+                let prec_sym = match prec {
+                    Some(ref id) => {
                         if !is_uppercase(id) {
-                            return error("The precedence symbol must be a terminal");
+                            return error2(id.span(), "The precedence symbol must be a terminal");
                         }
                         Some(self.symbol_new_t(id, NewSymbolType::Terminal))
                     }
@@ -1725,6 +1732,7 @@ impl Lemon {
 
                 let index = self.rules.len();
                 let rule = Rule {
+                    span,
                     lhs: lhs.clone(),
                     lhs_start: false,
                     rhs,
@@ -1746,7 +1754,7 @@ impl Lemon {
         Ok(())
     }
 
-    fn generate_source(&self) -> io::Result<TokenStream> {
+    fn generate_source(&self) -> syn::Result<TokenStream> {
         let mut src = TokenStream::new();
         src.extend(quote!{
             #![allow(dead_code)]
@@ -1827,7 +1835,7 @@ impl Lemon {
         };
 
         if !yytoken.variants.is_empty() {
-            return error("Token enum declaration must be empty");
+            return error2(yytoken.variants.span(), "Token enum declaration must be empty");
         }
 
         let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
@@ -2353,7 +2361,7 @@ impl Lemon {
         Ok(src)
     }
 
-    fn translate_code(&self, rp: &Rule) -> io::Result<TokenStream> {
+    fn translate_code(&self, rp: &Rule) -> syn::Result<TokenStream> {
         let lhs = rp.lhs.upgrade();
         let lhs = lhs.borrow();
         let mut code = TokenStream::new();
@@ -2407,7 +2415,7 @@ impl Lemon {
                     for or in &ss[1..] {
                         let or = or.upgrade();
                         if dt != or.borrow().dt_num {
-                            return error("Compound tokens must have all the same type");
+                            return error2(rp.span, "Compound tokens must have all the same type");
                         }
                     }
                 }

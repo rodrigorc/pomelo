@@ -18,15 +18,22 @@ use syn::punctuated::Punctuated;
 #[proc_macro]
 pub fn pomelo(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let Decls(decls) = parse_macro_input!(input);
-    let mut lemon = parser::Lemon::new_from_decls(decls).expect("error in new_from_decl");
-    let expanded = lemon.build().expect("error in lemon build");
+    let lemon = parser::Lemon::new_from_decls(decls);
+    let expanded = lemon.and_then(|mut l| l.build());
 
-    let x = quote!{
-        mod pomelo {
-            #expanded
+    match expanded {
+        Ok(expanded) =>  {
+            let x = quote!{
+                mod pomelo {
+                    #expanded
+                }
+            };
+            x.into()
         }
-    };
-    x.into()
+        Err(e) => {
+            e.to_compile_error().into()
+        }
+    }
 }
 
 struct Decls(Vec<Decl>);
