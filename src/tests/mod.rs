@@ -10,4 +10,6 @@ mod wildcard;
 mod token_class;
 mod token_alt;
 mod pattern;
+mod module;
+
 mod compiletest;

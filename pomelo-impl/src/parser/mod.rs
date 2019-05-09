@@ -239,6 +239,7 @@ struct State {
 
 #[derive(Debug)]
 pub struct Lemon {
+    module: Ident,
     includes: Vec<Item>,
     token_enum: Option<ItemEnum>,       //The enum Token{}, if specified with %token
     states: Vec<Rc<RefCell<State>>>,     //Table of states sorted by state number
@@ -565,6 +566,7 @@ impl Lemon {
         let err_sym = Lemon::symbol_new(&mut symbols, "error", NewSymbolType::NonTerminal);
 
         let mut lem = Lemon {
+            module: parse_quote!(parser),
             includes: Vec::new(),
             token_enum: None,
             states: Vec::new(),
@@ -592,6 +594,9 @@ impl Lemon {
 
         Lemon::symbol_new(&mut lem.symbols, "{default}", NewSymbolType::NonTerminal);
         Ok(lem)
+    }
+    pub fn module_name(&self) -> &Ident {
+        &self.module
     }
     pub fn build(&mut self) -> syn::Result<TokenStream> {
         self.prepare();
@@ -1606,6 +1611,9 @@ impl Lemon {
     fn parse_one_decl(&mut self, pdt: &mut ParserData, decl: Decl) -> syn::Result<()> {
         //println!("PARSE {:?}", decl);
         match decl {
+            Decl::Module(id) => {
+                self.module = id;
+            }
             Decl::Include(code) => {
                 self.includes.extend(code);
             }

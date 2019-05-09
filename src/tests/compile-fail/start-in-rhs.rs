@@ -1,6 +1,5 @@
-extern crate pomelo as pm;
-
-use pm::*;
+extern crate pomelo;
+use pomelo::*;
 
 pomelo! {
     input ::= foo;

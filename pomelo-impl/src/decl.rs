@@ -9,6 +9,7 @@ pub enum Associativity {
 
 #[derive(Debug)]
 pub enum Decl {
+    Module(Ident),
     Include(Vec<Item>),
     Type(Ident, Type),
     Assoc(Associativity, Vec<Ident>),

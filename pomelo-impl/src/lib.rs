@@ -18,22 +18,22 @@ use syn::punctuated::Punctuated;
 #[proc_macro]
 pub fn pomelo_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let Decls(decls) = parse_macro_input!(input);
-    let lemon = parser::Lemon::new_from_decls(decls);
-    let expanded = lemon.and_then(|mut l| l.build());
-
-    match expanded {
-        Ok(expanded) =>  {
-            let x = quote!{
-                mod pomelo {
-                    #expanded
-                }
-            };
-            x.into()
-        }
-        Err(e) => {
-            e.to_compile_error().into()
-        }
+    match pomelo_impl2(decls) {
+        Ok(x) => x,
+        Err(e) => e.to_compile_error().into(),
     }
+}
+
+fn pomelo_impl2(decls: Vec<Decl>) -> syn::Result<proc_macro::TokenStream> {
+    let mut lemon = parser::Lemon::new_from_decls(decls)?;
+    let expanded = lemon.build()?;
+    let name = lemon.module_name();
+    let x = quote!{
+        mod #name {
+            #expanded
+        }
+    };
+    Ok(x.into())
 }
 
 struct Decls(Vec<Decl>);
@@ -49,6 +49,7 @@ impl Parse for Decls {
 }
 
 mod kw {
+    custom_keyword!(module);
     custom_keyword!(include);
     custom_keyword!(left);
     custom_keyword!(right);
@@ -74,6 +75,12 @@ impl Parse for Decl {
                 let typ = input.parse::<Type>()?;
                 input.parse::<Token![;]>()?;
                 Ok(Decl::Type(ident, typ))
+            } else if lookahead.peek(kw::module) {
+                input.parse::<kw::module>()?;
+                // %module ident;
+                let ident = input.parse::<Ident>()?;
+                input.parse::<Token![;]>()?;
+                Ok(Decl::Module(ident))
             } else if lookahead.peek(kw::include) {
                 // %include { rust-code } [;]
                 input.parse::<kw::include>()?;

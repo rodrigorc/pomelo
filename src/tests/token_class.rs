@@ -13,7 +13,7 @@ pomelo! {
 
 #[test]
 fn token_class() -> Result<(), String> {
-    use pomelo::*;
+    use parser::*;
     let mut parse = Parser::new(Vec::new(), SimpleCallback);
     parse.parse(Token::One(1))?;
     parse.parse(Token::Two(2))?;

@@ -19,7 +19,7 @@ pomelo! {
 
 #[test]
 fn generic_parse() -> Result<(), String> {
-    use pomelo::*;
+    use parser::*;
     let mut parse = Parser::new(None, SimpleCallback);
     let x = 42;
     parse.parse(Token::<_, u8>::Terminal(&x))?;
