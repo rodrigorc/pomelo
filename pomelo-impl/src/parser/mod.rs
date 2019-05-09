@@ -36,14 +36,30 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 	}
 }
 
+type RcSymbol = Rc<RefCell<Symbol>>;
+type WeakSymbol = WRc<RefCell<Symbol>>;
+
+//Symbols do not have a single point of definition, instead they can appear in many places,
+//thus, its Span is not in struct Symbol, but in some selected references, those created directly
+//in the Rule
+#[derive(Debug)]
+struct WeakSymbolWithSpan(WeakSymbol, Span);
+
+impl WeakSymbolWithSpan {
+    //Make Self behave similarly to WeakSymbol
+    fn upgrade(&self) -> RcSymbol {
+        self.0.upgrade()
+    }
+}
+
 #[derive(Debug)]
 struct Rule {
     span: Span,
-    lhs: WRc<RefCell<Symbol>>,  //Left-hand side of the rule
+    lhs: WeakSymbolWithSpan,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<(WRc<RefCell<Symbol>>, Option<Pat>)>,   //RHS symbols and aliases
+    rhs: Vec<(WeakSymbolWithSpan, Option<Pat>)>,   //RHS symbols and aliases
     code: Option<Block>,//The code executed when this rule is reduced
-    prec_sym: Option<WRc<RefCell<Symbol>>>, //Precedence symbol for this rule
+    prec_sym: Option<WeakSymbol>, //Precedence symbol for this rule
     index: usize,         //An index number for this rule
     can_reduce: bool,   //True if this rule is ever reduced
 }
@@ -56,7 +72,7 @@ enum SymbolType {
         first_set: RuleSet,             //First-set for all rules of this symbol
         lambda: bool,                   //True if NonTerminal and can generate an empty string
     },
-    MultiTerminal(Vec<WRc<RefCell<Symbol>>>), //constituent symbols if MultiTerminal
+    MultiTerminal(Vec<WeakSymbol>), //constituent symbols if MultiTerminal
 }
 use SymbolType::*;
 
@@ -65,7 +81,7 @@ struct Symbol {
     name: String,               //Name of the symbol
     index: usize,               //Index number for this symbol
     typ: SymbolType,        //Either Terminal or NonTerminal
-    fallback: Option<WRc<RefCell<Symbol>>>, //Fallback token in case this token desn't parse
+    fallback: Option<WeakSymbol>, //Fallback token in case this token desn't parse
     assoc: Option<Precedence>,  //Precedence
     use_cnt: i32,               //Number of times used
     data_type: Option<Type>,  //Data type held by this object
@@ -81,7 +97,7 @@ impl Symbol {
     }
 }
 
-fn symbol_cmp(a: &Rc<RefCell<Symbol>>, b: &Rc<RefCell<Symbol>>) -> Ordering {
+fn symbol_cmp(a: &RcSymbol, b: &RcSymbol) -> Ordering {
     fn symbol_ord(s: &SymbolType) -> i32 {
         match s {
             Terminal => 0,
@@ -189,7 +205,7 @@ fn eaction_cmp(a: &EAction, b: &EAction) -> Ordering {
 //Every shift or reduce operation is stored as one of the following
 #[derive(Debug)]
 struct Action {
-  sp: WRc<RefCell<Symbol>>,           //The look-ahead symbol
+  sp: WeakSymbol,           //The look-ahead symbol
   x: EAction,
 }
 
@@ -229,9 +245,9 @@ pub struct Lemon {
     rules: Vec<Rc<RefCell<Rule>>>,        //List of all rules
     nsymbol: usize,
     nterminal: usize,
-    symbols: Vec<Rc<RefCell<Symbol>>>,   //Sorted array of symbols
-    err_sym: WRc<RefCell<Symbol>>,      //The error symbol
-    wildcard: Option<WRc<RefCell<Symbol>>>,     //The symbol that matches anything
+    symbols: Vec<RcSymbol>,   //Sorted array of symbols
+    err_sym: WeakSymbol,      //The error symbol
+    wildcard: Option<WeakSymbol>,     //The symbol that matches anything
     arg: Option<Type>,        //Declaration of the extra argument to parser
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
@@ -1410,7 +1426,7 @@ impl Lemon {
         }*/
     }
 
-    fn get_precedence(p: &Option<WRc<RefCell<Symbol>>>) -> Option<Precedence> {
+    fn get_precedence(p: &Option<WeakSymbol>) -> Option<Precedence> {
         p.as_ref().and_then(|y| {
             let y = y.upgrade();
             let y = y.borrow();
@@ -1520,13 +1536,17 @@ impl Lemon {
         }
     }
 
-    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WeakSymbol {
         Lemon::symbol_new(&mut self.symbols, name, typ)
     }
-    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WeakSymbol {
         Lemon::symbol_new(&mut self.symbols, name.to_string().as_ref(), typ)
     }
-    fn symbol_new(symbols: &mut Vec<Rc<RefCell<Symbol>>>, name: &str, typ: NewSymbolType) -> WRc<RefCell<Symbol>> {
+    fn symbol_new_t_span(&mut self, name: &Ident, typ: NewSymbolType) -> WeakSymbolWithSpan {
+        let sym = self.symbol_new_t(name, typ);
+        WeakSymbolWithSpan(sym, name.span())
+    }
+    fn symbol_new(symbols: &mut Vec<RcSymbol>, name: &str, typ: NewSymbolType) -> WeakSymbol {
         if !name.is_empty() {
             for s in symbols.iter() {
                 let mut b = s.borrow_mut();
@@ -1560,7 +1580,7 @@ impl Lemon {
         symbols.push(symbol);
         w
     }
-    fn symbol_find(&self, name: &str) -> Option<Rc<RefCell<Symbol>>> {
+    fn symbol_find(&self, name: &str) -> Option<RcSymbol> {
         for s in &self.symbols {
             let b = s.borrow();
             if b.name == name {
@@ -1684,11 +1704,11 @@ impl Lemon {
             }
             Decl::Rule{ lhs, rhs, action, prec } => {
                 //TODO use proper spans for each RHS
-                let span = lhs.span();
+                let lhs_span = lhs.span();
                 if !is_lowercase(&lhs) {
-                    return error_span(span, "LHS of rule must be non-terminal");
+                    return error_span(lhs_span, "LHS of rule must be non-terminal");
                 }
-                let lhs = self.symbol_new_t(&lhs, NewSymbolType::NonTerminal);
+                let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, alias)| {
                     let tok = if toks.len() == 1 {
                         let tok = toks.into_iter().next().unwrap();
@@ -1697,15 +1717,16 @@ impl Lemon {
                         } else if is_lowercase(&tok) {
                             NewSymbolType::NonTerminal
                         } else {
-                            return error_span(span, "Invalid token in RHS of rule");
+                            return error_span(tok.span(), "Invalid token in RHS of rule");
                         };
-                        self.symbol_new_t(&tok, nst)
+                        self.symbol_new_t_span(&tok, nst)
                     } else {
                         let mt = self.symbol_new_s("", NewSymbolType::MultiTerminal).upgrade();
                         let mut ss = Vec::new();
+                        let span = toks[0].span(); //TODO: extend span
                         for tok in toks {
                             if !is_uppercase(&tok) {
-                                return error_span(span, "Cannot form a compound containing a non-terminal");
+                                return error_span(tok.span(), "Cannot form a compound containing a non-terminal");
                             }
                             ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                         }
@@ -1714,7 +1735,7 @@ impl Lemon {
                         } else {
                             unreachable!();
                         }
-                        mt.into()
+                        WeakSymbolWithSpan(mt.into(), span)
                     };
                     //let alias = alias.as_ref().map(|id| tokens_to_string(id));
                     Ok((tok, alias))
@@ -1732,8 +1753,8 @@ impl Lemon {
 
                 let index = self.rules.len();
                 let rule = Rule {
-                    span,
-                    lhs: lhs.clone(),
+                    span: lhs_span,
+                    lhs: lhs,
                     lhs_start: false,
                     rhs,
                     code: action,
@@ -1741,8 +1762,8 @@ impl Lemon {
                     index,
                     can_reduce: false,
                 };
+                let lhs = rule.lhs.upgrade();
                 let rule = Rc::new(RefCell::new(rule));
-                let lhs = lhs.upgrade();
                 if let NonTerminal{ref mut rules, ..} = lhs.borrow_mut().typ {
                     rules.push((&rule).into());
                 } else {
