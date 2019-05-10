@@ -5,21 +5,47 @@ pomelo! {
     %include {
         use super::*;
         use super::lexer::{self, TestTree, TestToken};
+
+        fn char_to_token(c: char) -> Result<Token, String> {
+            let tk = match c {
+                '+' => Token::Plus,
+                '-' => Token::Minus,
+                '(' => Token::LParen,
+                ')' => Token::RParen,
+                '*' => Token::Mult,
+                '^' => Token::Pow,
+                tok => return Err(format!("unexpected token '{}'", tok)),
+            };
+            Ok(tk)
+        }
+
         pub fn parse_tree(input: &str) -> Result<TestTree, String> {
             let mut p = Parser::new(None, SimpleCallback);
             for tok in lexer::tokenize(input) {
                 let tok = match tok {
                     TestToken::Number(i) => Token::Integer(i),
-                    TestToken::Punct('+') => Token::Plus,
-                    TestToken::Punct('-') => Token::Minus,
-                    TestToken::Punct('(') => Token::LParen,
-                    TestToken::Punct(')') => Token::RParen,
-                    TestToken::Punct('*') => Token::Mult,
-                    TestToken::Punct('^') => Token::Pow,
+                    TestToken::Punct(c) => char_to_token(c)?,
                     tok => return Err(format!("unexpected token '{:?}'", tok)),
                 };
                 p.parse(tok)?;
             }
+            Ok(p.parse_eoi()?.unwrap())
+        }
+        pub fn parse_tree2(input: &str) -> Result<TestTree, String> {
+            use proc_macro2;
+            let tokstream = input.parse().map_err(|e: proc_macro2::LexError| "lexer error")?;
+            let mut p = Parser::new(None, SimpleCallback);
+
+            super::lexer2::parse(tokstream, |tk| {
+                let tk = match tk {
+                    proc_macro2::TokenTree::Punct(p) => char_to_token(p.as_char())?,
+                    proc_macro2::TokenTree::Literal(l) => Token::Integer(l.to_string().parse().unwrap()),
+                    proc_macro2::TokenTree::Ident(i) => panic!(),
+                    proc_macro2::TokenTree::Group(g) => panic!(),
+                };
+                p.parse(tk)?;
+                Ok::<(), String>(())
+            })?;
             Ok(p.parse_eoi()?.unwrap())
         }
     }
@@ -42,48 +68,44 @@ pomelo! {
     tree ::= Plus tree(A) { TestTree::Unary('>', Box::new(A)) } [Unary]
 }
 
-use parser::parse_tree;
+use parser::{parse_tree, parse_tree2};
+
+fn compare_tree(s: &str, t: &str) -> Result<(), String> {
+    let tree = parse_tree(s)?;
+    assert_eq!(tree.to_string(), t);
+
+    let tree = parse_tree2(s)?;
+    assert_eq!(tree.to_string(), t);
+
+    Ok(())
+}
 
 #[test]
 fn tree_basic() -> Result<(), String> {
-    let tree = parse_tree("1 + 2 - 3 + 4")?;
-    assert_eq!(tree.to_string(), "+ - + 1 2 3 4");
-    Ok(())
+    compare_tree("1 + 2 - 3 + 4", "+ - + 1 2 3 4")
 }
 
 #[test]
 fn tree_with_paren() -> Result<(), String> {
-    let tree = parse_tree("1 + (2 - 3) + 4")?;
-    assert_eq!(tree.to_string(), "+ + 1 - 2 3 4");
-    Ok(())
+    compare_tree("1 + (2 - 3) + 4", "+ + 1 - 2 3 4")
 }
 
 #[test]
 fn tree_precedence() -> Result<(), String> {
-    let tree = parse_tree("1 * (2 + 3)")?;
-    assert_eq!(tree.to_string(), "* 1 + 2 3");
-    let tree = parse_tree("1 * 2 + 3")?;
-    assert_eq!(tree.to_string(), "+ * 1 2 3");
-    let tree = parse_tree("1 + 2 * 3")?;
-    assert_eq!(tree.to_string(), "+ 1 * 2 3");
-    Ok(())
+    compare_tree("1 * (2 + 3)", "* 1 + 2 3")?;
+    compare_tree("1 * 2 + 3", "+ * 1 2 3")?;
+    compare_tree("1 + 2 * 3", "+ 1 * 2 3")
 }
 
 #[test]
 fn tree_right() -> Result<(), String> {
-    let tree = parse_tree("1 ^ 2 ^ 3")?;
-    assert_eq!(tree.to_string(), "^ 1 ^ 2 3");
-    Ok(())
+    compare_tree("1 ^ 2 ^ 3", "^ 1 ^ 2 3")
 }
 
 #[test]
 fn tree_unary_prec() -> Result<(), String> {
-    let tree = parse_tree("-1 * 2")?;
-    assert_eq!(tree.to_string(), "* < 1 2");
-    let tree = parse_tree("2 +-1 * -+2")?;
-    assert_eq!(tree.to_string(), "+ 2 * < 1 < > 2");
-    let tree = parse_tree("-(2 + 3)")?;
-    assert_eq!(tree.to_string(), "< + 2 3");
-    Ok(())
+    compare_tree("-1 * 2", "* < 1 2")?;
+    compare_tree("2 +-1 * -+2", "+ 2 * < 1 < > 2")?;
+    compare_tree("-(2 + 3)", "< + 2 3")
 }
 

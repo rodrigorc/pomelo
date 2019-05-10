@@ -1,6 +1,7 @@
 use super::*;
 
 mod lexer;
+mod lexer2;
 mod tree;
 mod start_symbol;
 mod token;
