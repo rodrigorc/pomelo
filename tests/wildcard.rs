@@ -14,6 +14,6 @@ fn wildcard() -> Result<(), String> {
     p.parse(Token::One)?;
     p.parse(Token::Two)?;
     p.parse(Token::One)?;
-    p.parse_eoi()?;
+    p.end_of_input()?;
     Ok(())
 }

@@ -12,18 +12,18 @@ pomelo! {
 
     %type Phantom PhantomData<&'b B>;
     %type Terminal &'a A;
-    %extra_argument Option<&'a A>;
+    %type input &'a A;
 
-    input ::= Terminal(T) { *extra = Some(T); }
+    input ::= Terminal(T) { T }
 }
 
 #[test]
 fn generic_parse() -> Result<(), String> {
     use parser::*;
-    let mut parse = Parser::new(None, SimpleCallback);
+    let mut parse = Parser::new((), SimpleCallback);
     let x = 42;
     parse.parse(Token::<_, u8>::Terminal(&x))?;
-    let res = parse.parse_eoi()?;
-    assert_eq!(res, Some(&42));
+    let res = parse.end_of_input()?;
+    assert_eq!(res, &42);
     Ok(())
 }

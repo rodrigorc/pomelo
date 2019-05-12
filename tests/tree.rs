@@ -2,7 +2,6 @@ use pomelo::*;
 mod toy_lexer;
 
 pomelo! {
-    %extra_argument Option<TestTree>;
     %include {
         use super::toy_lexer::{self, TestTree, TestToken};
         use pomelo::*;
@@ -21,7 +20,7 @@ pomelo! {
         }
 
         pub fn parse_tree(input: &str) -> Result<TestTree, String> {
-            let mut p = Parser::new(None, SimpleCallback);
+            let mut p = Parser::new((), SimpleCallback);
             for tok in toy_lexer::tokenize(input) {
                 let tok = match tok {
                     TestToken::Number(i) => Token::Integer(i),
@@ -30,12 +29,12 @@ pomelo! {
                 };
                 p.parse(tok)?;
             }
-            Ok(p.parse_eoi()?.unwrap())
+            Ok(p.end_of_input()?)
         }
         pub fn parse_tree2(input: &str) -> Result<TestTree, String> {
             use proc_macro2;
             let tokstream = input.parse().map_err(|e: proc_macro2::LexError| "lexer error")?;
-            let mut p = Parser::new(None, SimpleCallback);
+            let mut p = Parser::new((), SimpleCallback);
 
             lexer::parse(tokstream, |tk| {
                 let tk = match tk {
@@ -47,9 +46,10 @@ pomelo! {
                 p.parse(tk)?;
                 Ok::<(), String>(())
             })?;
-            Ok(p.parse_eoi()?.unwrap())
+            Ok(p.end_of_input()?)
         }
     }
+    %type input TestTree;
     %type tree TestTree;
     %type Integer i32;
     %left Plus Minus;
@@ -57,7 +57,7 @@ pomelo! {
     %nonassoc Unary;
     %right Pow;
 
-    input ::= tree(A) { *extra = Some(A) }
+    input ::= tree(A) { A }
 
     tree ::= Integer(I) { TestTree::Integer(I) }
     tree ::= LParen tree(A) RParen { A }

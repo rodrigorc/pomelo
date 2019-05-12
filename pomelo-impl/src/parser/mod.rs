@@ -253,7 +253,7 @@ pub struct Lemon {
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
     var_type: Option<Type>,
-    start: Option<Ident>,
+    start: Option<WeakSymbol>,
 }
 
 impl fmt::Display for Symbol {
@@ -639,6 +639,10 @@ impl Lemon {
             }
         }
         self.nterminal += 1;
+
+        if self.start.is_none() {
+            self.start = Some(self.rules.first().unwrap().borrow().lhs.0.clone());
+        }
     }
 
     /* Find a precedence symbol of every rule in the grammar.
@@ -767,21 +771,7 @@ impl Lemon {
      */
     fn find_states(&mut self) -> syn::Result<()> {
         /* Find the start symbol */
-        let sp = match self.start {
-            None => {
-                let r = self.rules.first().unwrap();
-                let b = r.borrow();
-                b.lhs.upgrade();
-
-                self.rules.first().unwrap().borrow().lhs.upgrade()
-            }
-            Some(ref s) => {
-                match self.symbol_find(&s.to_string()) {
-                    Some(x) => x,
-                    None => return error_span(s.span(), "start_symbol is unknown"),
-                }
-            }
-        };
+        let sp = self.start.as_ref().unwrap().upgrade();
 
         /* Make sure the start symbol doesn't occur on the right-hand side of
          ** any rule.  Report an error if it does.  (YACC would generate a new
@@ -1029,16 +1019,13 @@ impl Lemon {
         }
 
         /* Add the accepting token */
-        let sp = match self.start {
-            Some(ref start) => self.symbol_find(&start.to_string()).unwrap(),
-            None => self.rules.first().unwrap().borrow().lhs.upgrade(),
-        };
+        let sp = self.start.clone().unwrap();
 
         /* Add to the first state (which is always the starting state of the
          ** finite state machine) an action to ACCEPT if the lookahead is the
          ** start nonterminal.  */
         self.states.first().unwrap().borrow_mut().ap.push(RefCell::new(Action {
-            sp: sp.into(),
+            sp: sp,
             x: EAction::Accept,
         }));
 
@@ -1663,12 +1650,15 @@ impl Lemon {
                 if self.start.is_some() {
                     return error_span(id.span(), "Start symbol already defined");
                 }
-                self.start = Some(id);
+                if is_uppercase(&id) {
+                    return error_span(id.span(), "Start symbol must be a non-terminal");
+                }
+                self.start = Some(self.symbol_new_t(&id, NewSymbolType::NonTerminal));
             }
             Decl::Fallback(fb, ids) => {
-                    if !is_uppercase(&fb) {
-                        return error_span(fb.span(), "Fallback must be a token");
-                    }
+                if !is_uppercase(&fb) {
+                    return error_span(fb.span(), "Fallback must be a token");
+                }
                 let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
                 for id in ids {
                     if !is_uppercase(&fb) {
@@ -1876,6 +1866,7 @@ impl Lemon {
             quote!(#ident(#k))
         });
         src.extend(quote!(
+            #[derive(Debug)]
             enum YYMinorType #yy_generics_impl
                 #yy_generics_where
             {
@@ -2136,8 +2127,10 @@ impl Lemon {
         let yy_rule_info_len = yy_rule_info.len();
         src.extend(quote!(static YY_RULE_INFO: [YYCODETYPE; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
 
-        let unit_type = parse_quote!(());
-        let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
+        let unit_type : Type = parse_quote!(());
+        let yyextratype = self.arg.clone().unwrap_or(unit_type.clone());
+        let start = self.start.as_ref().unwrap().upgrade();
+        let yyroottype = start.borrow().data_type.clone().unwrap_or(unit_type);
 
         let mut yy_generics_with_cb = yytoken.generics.clone();
         yy_generics_with_cb.params.push(parse_quote!{ CB: PomeloCallback<#yyextratype> } );
@@ -2145,6 +2138,7 @@ impl Lemon {
         let (yy_generics_with_cb_impl, yy_generics_with_cb, yy_generics_with_cb_where) = yy_generics_with_cb.split_for_impl();
 
         src.extend(quote!{
+            #[derive(Debug)]
             struct YYStackEntry #yy_generics_impl #yy_generics_where {
                 stateno: i32,   /* The state-number */
                 major: i32,     /* The major token value.  This is the code
@@ -2157,12 +2151,19 @@ impl Lemon {
                 yyerrcnt: i32, /* Shifts left before out of the error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
+                accepted: Option<#yyroottype>,
                 cb: CB,
             }
 
             impl #yy_generics_with_cb_impl Parser #yy_generics_with_cb #yy_generics_with_cb_where {
                 pub fn new(extra: #yyextratype, cb: CB) -> Self {
-                    let mut p = Parser { yyerrcnt: -1, yystack: Vec::new(), extra: extra, cb};
+                    let mut p = Parser {
+                        yyerrcnt: -1,
+                        yystack: Vec::new(),
+                        extra: extra,
+                        accepted: None,
+                        cb
+                    };
                     p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0});
                     p
                 }
@@ -2179,9 +2180,9 @@ impl Lemon {
                     let (a, b) = token_value(token);
                     yy_parse_token(self, a, b)
                 }
-                pub fn parse_eoi(mut self) -> Result<#yyextratype, CB::Error> {
+                pub fn end_of_input(mut self) -> Result<#yyroottype, CB::Error> {
                     yy_parse_token(&mut self, 0, YYMinorType::YY0)?;
-                    Ok(self.extra)
+                    Ok(self.accepted.unwrap())
                 }
             }
 
@@ -2371,6 +2372,26 @@ impl Lemon {
         }
         yyrules.push(quote!(_ => unreachable!()));
 
+        let accept_code = match types.get(&yyroottype) {
+            Some(n) => {
+                let yyroot = Ident::new(&format!("YY{}", n), Span::call_site());
+                quote!(
+                    if let YYMinorType::#yyroot(root) = yygotominor {
+                        yy.accepted = Some(root);
+                        yy_accept(yy)
+                    } else {
+                        unreachable!();
+                    }
+                )
+            }
+            None => {
+                quote!(
+                    yy.accepted = Some(());
+                    yy_accept(yy)
+                )
+            }
+        };
+
         let yyreduce_fn = quote!(
             fn yy_reduce #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yyruleno: i32) -> Result<(), CB::Error>
                 #yy_generics_with_cb_where
@@ -2385,7 +2406,7 @@ impl Lemon {
                     Ok(())
                 } else {
                     assert!(yyact == YYNSTATE + YYNRULE + 1);
-                    yy_accept(yy)
+                    #accept_code
                 }
             }
         );

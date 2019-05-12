@@ -3,7 +3,7 @@ use pomelo::*;
 pomelo! {
     %fallback Fallback One Two Three;
 
-    input ::= tokens; 
+    input ::= tokens;
     tokens ::= Fallback Two Fallback;
     tokens ::= Three Two One;
 }
@@ -16,6 +16,6 @@ fn fallback() -> Result<(), String> {
     p.parse(Token::One)?;
     p.parse(Token::Two)?;
     p.parse(Token::Three)?;
-    p.parse_eoi()?;
+    p.end_of_input()?;
     Ok(())
 }

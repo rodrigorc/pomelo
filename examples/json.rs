@@ -14,7 +14,7 @@ pub enum JObject {
 impl std::str::FromStr for JObject {
     type Err = String;
     fn from_str(input: &str) -> Result<JObject, String> {
-        let mut p = json::Parser::new(JObject::JNull, SimpleCallback);
+        let mut p = json::Parser::new((), SimpleCallback);
         let tok_stream = input.parse().map_err(|_| "Lexer Error")?;
         lexer::parse::<String, _>(tok_stream, |tk| {
             use proc_macro2::TokenTree;
@@ -56,7 +56,7 @@ impl std::str::FromStr for JObject {
             p.parse(tk)?;
             Ok(())
         })?;
-        let j = p.parse_eoi()?;
+        let j = p.end_of_input()?;
         Ok(j)
     }
 }
@@ -68,7 +68,7 @@ pomelo! {
         use std::collections::HashMap;
     }
     %token #[derive(Debug)] pub enum Token {};
-    %extra_argument JObject;
+    %type start JObject;
     %type jobject JObject;
     %type jdict JObject;
     %type jarray JObject;
@@ -79,7 +79,7 @@ pomelo! {
     %type jitem_list HashMap<String, JObject>;
     %type jitem (String, JObject);
 
-    start ::= jobject(J) { *extra = J; }
+    start ::= jobject(J) { J }
 
     jobject ::= jdict(D) { D }
     jobject ::= jarray(A) { A }
