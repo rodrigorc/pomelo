@@ -33,5 +33,5 @@ pub use pomelo_impl::pomelo_impl;
 #[macro_export]
 macro_rules! pomelo { ($($t:tt)* ) => ( pomelo_impl!{$($t)*} ) }
 
-#[cfg(test)]
-mod tests;
+#[cfg(feature = "lexer")]
+pub mod lexer;
