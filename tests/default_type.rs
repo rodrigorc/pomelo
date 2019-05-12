@@ -1,4 +1,4 @@
-use super::*;
+use pomelo::*;
 
 pomelo! {
     %default_type Option<i32>;

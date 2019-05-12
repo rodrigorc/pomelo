@@ -1,4 +1,4 @@
-use super::*;
+use pomelo::*;
 
 pomelo! {
     %fallback Fallback One Two Three;

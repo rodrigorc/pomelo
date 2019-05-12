@@ -1,7 +1,6 @@
+/*
 use super::*;
-
-mod lexer;
-mod lexer2;
+mod toy_lexer;
 mod tree;
 mod start_symbol;
 mod token;
@@ -14,3 +13,4 @@ mod pattern;
 mod module;
 
 mod compiletest;
+*/

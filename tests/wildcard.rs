@@ -1,4 +1,4 @@
-use super::*;
+use pomelo::*;
 
 pomelo! {
     %wildcard WC;

@@ -1,4 +1,4 @@
-use super::*;
+use pomelo::*;
 
 //You can use %token to add attributes to the Token enum or to add generic types.
 //Generic arguments in Token will apply also to Parser.

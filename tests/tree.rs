@@ -1,10 +1,11 @@
-use super::*;
+use pomelo::*;
+mod toy_lexer;
 
 pomelo! {
     %extra_argument Option<TestTree>;
     %include {
-        use super::*;
-        use super::lexer::{self, TestTree, TestToken};
+        use super::toy_lexer::{self, TestTree, TestToken};
+        use pomelo::*;
 
         fn char_to_token(c: char) -> Result<Token, String> {
             let tk = match c {
@@ -21,7 +22,7 @@ pomelo! {
 
         pub fn parse_tree(input: &str) -> Result<TestTree, String> {
             let mut p = Parser::new(None, SimpleCallback);
-            for tok in lexer::tokenize(input) {
+            for tok in toy_lexer::tokenize(input) {
                 let tok = match tok {
                     TestToken::Number(i) => Token::Integer(i),
                     TestToken::Punct(c) => char_to_token(c)?,
@@ -36,7 +37,7 @@ pomelo! {
             let tokstream = input.parse().map_err(|e: proc_macro2::LexError| "lexer error")?;
             let mut p = Parser::new(None, SimpleCallback);
 
-            super::lexer2::parse(tokstream, |tk| {
+            lexer::parse(tokstream, |tk| {
                 let tk = match tk {
                     proc_macro2::TokenTree::Punct(p) => char_to_token(p.as_char())?,
                     proc_macro2::TokenTree::Literal(l) => Token::Integer(l.to_string().parse().unwrap()),

@@ -1,4 +1,4 @@
-use super::*;
+use pomelo::*;
 
 pomelo! {
     %type One (i32, u8);

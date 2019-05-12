@@ -15,7 +15,4 @@ proc-macro2 = { version = "*", optional = true }
 [dev-dependencies]
 quote = "*"
 proc-macro2 = "*"
-
-[dev-dependencies.compiletest_rs]
-version = "*"
-features = ["stable"]
+compiletest_rs = { version = "*", features = ["stable"] }
