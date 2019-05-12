@@ -1469,13 +1469,14 @@ impl Lemon {
             let ref rhs = rp.borrow().rhs;
             let dot = cfp.borrow().dot;
             if dot < rhs.len() {
-                let sp = rhs[dot].0.upgrade();
+                let sp_span = &rhs[dot].0;
+                let sp = sp_span.upgrade();
                 let ref spt = sp.borrow().typ;
                 if let NonTerminal{ref rules, ..} = spt {
                     if rules.is_empty() {
                         let is_err_sym = Rc::ptr_eq(&sp, &self.err_sym.upgrade());
                         if !is_err_sym {
-                            return error("Nonterminal has no rules");
+                            return error_span(sp_span.1, "Nonterminal has no rules");
                         }
                     }
                     for newrp in rules {
