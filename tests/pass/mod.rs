@@ -1,5 +1,3 @@
-/*
-use super::*;
 mod toy_lexer;
 mod tree;
 mod start_symbol;
@@ -11,6 +9,5 @@ mod token_class;
 mod token_alt;
 mod pattern;
 mod module;
-
-mod compiletest;
-*/
+mod error1;
+mod error2;

@@ -1,5 +1,5 @@
 use pomelo::*;
-mod toy_lexer;
+use super::toy_lexer;
 
 pomelo! {
     %include {
