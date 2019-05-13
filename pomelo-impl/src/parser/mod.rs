@@ -85,7 +85,7 @@ struct Symbol {
     assoc: Option<Precedence>,  //Precedence
     use_cnt: i32,               //Number of times used
     data_type: Option<Type>,  //Data type held by this object
-    dt_num: Option<usize>,      //The data type number. The .yy%d element of stack is the correct data type for this object
+    dt_num: usize,              //The data type number (0 is always ()). The YY{} element of stack is the correct data type for this object
 }
 
 impl Symbol {
@@ -1566,7 +1566,7 @@ impl Lemon {
             assoc: None,
             use_cnt: 1,
             data_type: None,
-            dt_num: None,
+            dt_num: 0,
         };
         let symbol = Rc::new(RefCell::new(symbol));
         let w = (&symbol).into();
@@ -1833,17 +1833,17 @@ impl Lemon {
              ** a datatype using the %type directive.
              */
             if let SymbolType::MultiTerminal(_) = sp.typ {
-                sp.dt_num = None;
+                sp.dt_num = 0;
                 continue;
             }
 
             sp.dt_num = {
                 let cp = sp.data_type.as_ref().or(if sp.index < self.nterminal { self.var_type.as_ref() } else { None });
                 match cp {
-                    None => None,
+                    None => 0,
                     Some(cp) => {
                         let next = types.len() + 1;
-                        Some(*types.entry(cp.clone()).or_insert(next))
+                        *types.entry(cp.clone()).or_insert(next)
                     }
                 }
             };
@@ -1870,7 +1870,7 @@ impl Lemon {
             enum YYMinorType #yy_generics_impl
                 #yy_generics_where
             {
-                YY0,
+                YY0(()),
                 #(#minor_types),*
             }
         ));
@@ -1880,7 +1880,7 @@ impl Lemon {
         let yynrule = self.rules.len() as i32;
         let err_sym = self.err_sym.upgrade();
         let mut err_sym = err_sym.borrow_mut();
-        err_sym.dt_num = Some(types.len() + 1);
+        err_sym.dt_num = types.len() + 1;
 
         let yyerrorsymbol = if err_sym.use_cnt > 0 {
             err_sym.index as i32
@@ -1979,14 +1979,20 @@ impl Lemon {
         /* Output the yy_action table */
         let yytoken_span = yytoken.brace_token.span;
 
+        let mut token_matches = Vec::new();
         for i in 1 .. self.nterminal {
             let ref s = self.symbols[i];
+            let i = i as i32;
             let s = s.borrow();
+            let name = Ident::new(&s.name, Span::call_site());
+            let yydt = Ident::new(&format!("YY{}", s.dt_num), Span::call_site());
             let dt = match s.data_type.as_ref().or(self.var_type.as_ref()) {
                 Some(dt) => {
+                    token_matches.push(quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x))));
                     Fields::Unnamed( parse_quote!{ (#dt) })
                 }
                 None => {
+                    token_matches.push(quote!(Token::#name => (#i, YYMinorType::#yydt(()))));
                     Fields::Unit
                 }
             };
@@ -1999,20 +2005,6 @@ impl Lemon {
         }
         yytoken.to_tokens(&mut src);
 
-        let token_matches = self.symbols.iter().enumerate().take(self.nterminal).skip(1).map(|(i, s)| {
-            let s = s.borrow();
-            let i = i as i32;
-            let name = Ident::new(&s.name, Span::call_site());
-            match s.dt_num {
-                Some(dt) => {
-                    let yydt = Ident::new(&format!("YY{}", dt), Span::call_site());
-                    quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x)))
-                }
-                None => {
-                    quote!(Token::#name => (#i, YYMinorType::YY0))
-                }
-            }
-        });
         src.extend(quote!(
             #[inline]
             fn token_value #yy_generics_impl(t: Token #yy_generics) -> (i32, YYMinorType #yy_generics)
@@ -2101,8 +2093,8 @@ impl Lemon {
                         let fb = fb.upgrade();
                         let fb = fb.borrow();
                         match (fb.dt_num, p.dt_num) {
-                            (None, _) => {}
-                            (Some(fdt), Some(pdt)) if fdt == pdt => {}
+                            (0, _) => {}
+                            (fdt, pdt) if fdt == pdt => {}
                             _ => {
                                 return error("Fallback token must have the same type or no type at all");
                             }
@@ -2164,7 +2156,7 @@ impl Lemon {
                         accepted: None,
                         cb
                     };
-                    p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0});
+                    p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0(())});
                     p
                 }
                 pub fn into_extra(self) -> #yyextratype {
@@ -2181,7 +2173,7 @@ impl Lemon {
                     yy_parse_token(self, a, b)
                 }
                 pub fn end_of_input(mut self) -> Result<#yyroottype, CB::Error> {
-                    yy_parse_token(&mut self, 0, YYMinorType::YY0)?;
+                    yy_parse_token(&mut self, 0, YYMinorType::YY0(()))?;
                     Ok(self.accepted.unwrap())
                 }
             }
@@ -2239,7 +2231,7 @@ impl Lemon {
                                     yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
                                     if yyact < YYNSTATE {
                                         if !yyendofinput {
-                                            yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0);
+                                            yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0(()));
                                         }
                                         break;
                                     }
@@ -2421,26 +2413,9 @@ impl Lemon {
         let mut code = TokenStream::new();
         let err_sym = self.err_sym.upgrade();
 
-        for (i, r) in rp.rhs.iter().enumerate().rev() {
-            let r = r.0.upgrade();
-            let r = r.borrow();
-            let dt = match r.typ {
-                MultiTerminal(ref ss) => {
-                    let rr = ss.first().unwrap().upgrade();
-                    let dt_num = rr.borrow().dt_num;
-                    dt_num
-                }
-                _ => r.dt_num,
-            };
-            match dt {
-                Some(_) => {
-                    let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
-                    code.extend(quote!(let #yypi = yy.yystack.pop().unwrap();));
-                }
-                None => {
-                    code.extend(quote!(yy.yystack.pop().unwrap();));
-                }
-            }
+        for (i, _) in rp.rhs.iter().enumerate().rev() {
+            let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
+            code.extend(quote!(let #yypi = yy.yystack.pop().unwrap();));
         }
 
         let unit_type = parse_quote!(());
@@ -2459,7 +2434,7 @@ impl Lemon {
                 }
                 _ => r.dt_num,
             };
-            if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
+            if !Rc::ptr_eq(&r_, &err_sym) {
                 let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
                 yymatch.push(quote!(#yypi.minor));
             }
@@ -2489,8 +2464,8 @@ impl Lemon {
                 }
                 _ => r.dt_num,
             };
-            if !Rc::ptr_eq(&r_, &err_sym) && dt.is_some() {
-                let yydt = Ident::new(&format!("YY{}", dt.unwrap()), Span::call_site());
+            if !Rc::ptr_eq(&r_, &err_sym) {
+                let yydt = Ident::new(&format!("YY{}", dt), Span::call_site());
                 match alias {
                     Some(ref alias) => yypattern.push(quote!(YYMinorType::#yydt(#alias))),
                     None => yypattern.push(quote!(YYMinorType::#yydt(_))),
@@ -2506,15 +2481,8 @@ impl Lemon {
             };
         ));
 
-        match lhs.dt_num {
-            Some(ref dt) => {
-                let yydt = Ident::new(&format!("YY{}", dt), Span::call_site());
-                code.extend(quote!(YYMinorType::#yydt(yyres)));
-            }
-            None => {
-                code.extend(quote!(YYMinorType::YY0));
-            }
-        }
+        let yydt = Ident::new(&format!("YY{}", lhs.dt_num), Span::call_site());
+        code.extend(quote!(YYMinorType::#yydt(yyres)));
         Ok(code)
     }
 }
