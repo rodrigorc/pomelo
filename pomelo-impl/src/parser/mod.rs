@@ -779,16 +779,17 @@ impl Lemon {
         for rp in &self.rules {
             let rp = rp.borrow_mut();
             for (r,_) in &rp.rhs {
+                let span = &r.1;
                 let r = r.upgrade();
                 if Rc::ptr_eq(&sp, &r) {
-                    return error_span(rp.span, "start symbol on the RHS of a rule");
+                    return error_span(*span, "start symbol on the RHS of a rule");
                 }
                 let r = r.borrow();
                 if let MultiTerminal(ref sub_sym) = r.typ {
                     for r2 in sub_sym {
                         let r2 = r2.upgrade();
                         if Rc::ptr_eq(&sp, &r2) {
-                            return error_span(rp.span, "start symbol on the RHS of a rule");
+                            return error_span(*span, "start symbol on the RHS of a rule");
                         }
                     }
                 }
@@ -1818,33 +1819,37 @@ impl Lemon {
          */
         let mut types = HashMap::new();
 
-        for i in 0..self.nsymbol {
-            let ref sp = self.symbols[i];
-
+        for sp in &self.symbols {
             if Rc::ptr_eq(&sp, &self.err_sym.upgrade()) {
                 continue;
             }
 
             let mut sp = sp.borrow_mut();
 
-            /* The ".dtnum" field of each symbol is filled.  A ".dtnum" value of 0 is
-             ** used for terminal symbols.  If there is no %default_type defined then
-             ** 0 is also used as the .dtnum value for nonterminals which do not specify
-             ** a datatype using the %type directive.
-             */
-            if let SymbolType::MultiTerminal(_) = sp.typ {
-                sp.dt_num = 0;
-                continue;
-            }
+            /* Determine the data_type of each symbol and fill its dt_num */
+            let data_type = match sp.typ {
+                SymbolType::MultiTerminal(ref ss) => {
+                    //MultiTerminals have the type of the first child.
+                    //The type of the children need be the same only if an alias is used, so we
+                    //cannot check it here
+                    let first = ss.first().unwrap().upgrade();
+                    let first = first.borrow();
+                    first.data_type.as_ref().or(self.var_type.as_ref()).cloned()
+                }
+                SymbolType::Terminal => {
+                    //If a terminal does not define a type, use the %default_type
+                    sp.data_type.as_ref().or(self.var_type.as_ref()).cloned()
+                }
+                SymbolType::NonTerminal{..} => {
+                    sp.data_type.clone()
+                }
+            };
 
-            sp.dt_num = {
-                let cp = sp.data_type.as_ref().or(if sp.index < self.nterminal { self.var_type.as_ref() } else { None });
-                match cp {
-                    None => 0,
-                    Some(cp) => {
-                        let next = types.len() + 1;
-                        *types.entry(cp.clone()).or_insert(next)
-                    }
+            sp.dt_num = match data_type {
+                None => 0,
+                Some(cp) => {
+                    let next = types.len() + 1;
+                    *types.entry(cp).or_insert(next)
                 }
             };
         }
@@ -2423,17 +2428,10 @@ impl Lemon {
 
         let mut yymatch = Vec::new();
         for (i, r) in rp.rhs.iter().enumerate() {
+            let span = &(r.0).1;
             let r_ = r.0.upgrade();
             let ref alias = r.1;
             let r = r_.borrow();
-            let dt = match r.typ {
-                MultiTerminal(ref ss) => {
-                    let rr = ss.first().unwrap().upgrade();
-                    let dt_num = rr.borrow().dt_num;
-                    dt_num
-                }
-                _ => r.dt_num,
-            };
             if !Rc::ptr_eq(&r_, &err_sym) {
                 let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
                 yymatch.push(quote!(#yypi.minor));
@@ -2442,8 +2440,8 @@ impl Lemon {
                 (Some(_), MultiTerminal(ref ss)) => {
                     for or in &ss[1..] {
                         let or = or.upgrade();
-                        if dt != or.borrow().dt_num {
-                            return error_span(rp.span, "Compound tokens must have all the same type");
+                        if r.dt_num != or.borrow().dt_num {
+                            return error_span(*span, "Compound tokens must have all the same type");
                         }
                     }
                 }
@@ -2456,16 +2454,8 @@ impl Lemon {
             let r_ = r.0.upgrade();
             let ref alias = r.1;
             let r = r_.borrow();
-            let dt = match r.typ {
-                MultiTerminal(ref ss) => {
-                    let rr = ss.first().unwrap().upgrade();
-                    let dt_num = rr.borrow().dt_num;
-                    dt_num
-                }
-                _ => r.dt_num,
-            };
             if !Rc::ptr_eq(&r_, &err_sym) {
-                let yydt = Ident::new(&format!("YY{}", dt), Span::call_site());
+                let yydt = Ident::new(&format!("YY{}", r.dt_num), Span::call_site());
                 match alias {
                     Some(ref alias) => yypattern.push(quote!(YYMinorType::#yydt(#alias))),
                     None => yypattern.push(quote!(YYMinorType::#yydt(_))),

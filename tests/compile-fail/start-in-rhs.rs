@@ -3,7 +3,8 @@ use pomelo::*;
 
 pomelo! {
     input ::= foo;
-    foo ::= input;
+    foo ::=
+        input;
      //~^ ERROR start symbol on the RHS of a rule
 }
 
