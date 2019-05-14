@@ -1824,6 +1824,12 @@ impl Lemon {
                 continue;
             }
 
+            if let Some(ref wildcard) = self.wildcard {
+               if Rc::ptr_eq(&sp, &wildcard.upgrade()) {
+                   continue;
+               }
+            }
+
             let mut sp = sp.borrow_mut();
 
             /* Determine the data_type of each symbol and fill its dt_num */
@@ -1845,6 +1851,7 @@ impl Lemon {
                 }
             };
 
+            sp.data_type = data_type.clone();
             sp.dt_num = match data_type {
                 None => 0,
                 Some(cp) => {
@@ -1991,8 +1998,8 @@ impl Lemon {
             let s = s.borrow();
             let name = Ident::new(&s.name, Span::call_site());
             let yydt = Ident::new(&format!("YY{}", s.dt_num), Span::call_site());
-            let dt = match s.data_type.as_ref().or(self.var_type.as_ref()) {
-                Some(dt) => {
+            let dt = match s.data_type {
+                Some(ref dt) => {
                     token_matches.push(quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x))));
                     Fields::Unnamed( parse_quote!{ (#dt) })
                 }
@@ -2418,7 +2425,7 @@ impl Lemon {
         let mut code = TokenStream::new();
         let err_sym = self.err_sym.upgrade();
 
-        for (i, _) in rp.rhs.iter().enumerate().rev() {
+        for i in (0..rp.rhs.len()).rev() {
             let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
             code.extend(quote!(let #yypi = yy.yystack.pop().unwrap();));
         }
@@ -2450,16 +2457,24 @@ impl Lemon {
         }
 
         let mut yypattern = Vec::new();
-        for (_i, r) in rp.rhs.iter().enumerate() {
+        for r in &rp.rhs {
             let r_ = r.0.upgrade();
             let ref alias = r.1;
             let r = r_.borrow();
-            if !Rc::ptr_eq(&r_, &err_sym) {
-                let yydt = Ident::new(&format!("YY{}", r.dt_num), Span::call_site());
-                match alias {
-                    Some(ref alias) => yypattern.push(quote!(YYMinorType::#yydt(#alias))),
-                    None => yypattern.push(quote!(YYMinorType::#yydt(_))),
+            if Rc::ptr_eq(&r_, &err_sym) {
+                continue;
+            }
+            let yydt = Ident::new(&format!("YY{}", r.dt_num), Span::call_site());
+            match alias {
+                Some(ref alias) => {
+                    if let Some(ref wildcard) = self.wildcard {
+                        if Rc::ptr_eq(&r_, &wildcard.upgrade()) {
+                            return error_span(alias.span(), "Wildcard token must not have an alias");
+                        }
+                    }
+                    yypattern.push(quote!(YYMinorType::#yydt(#alias)))
                 }
+                None => yypattern.push(quote!(_))
             }
         }
 
