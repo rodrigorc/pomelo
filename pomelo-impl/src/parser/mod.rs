@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Span, TokenStream, Literal};
 use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant, spanned::Spanned};
 use quote::ToTokens;
 use crate::decl::*;
@@ -522,23 +522,23 @@ impl ActTab {
     }
 }
 
-fn minimum_size_type(signed: bool, max: usize) -> Ident {
-    if signed {
-        if max < 0x80 {
-            parse_quote!(i8)
-        } else if max < 0x8000 {
-            parse_quote!(i16)
-        } else {
-            parse_quote!(i32)
-        }
+fn minimum_signed_type(max: usize) -> Ident {
+    if max < 0x80 {
+        parse_quote!(i8)
+    } else if max < 0x8000 {
+        parse_quote!(i16)
     } else {
-        if max < 0x100 {
-            parse_quote!(u8)
-        } else if max < 0x10000 {
-            parse_quote!(u16)
-        } else {
-            parse_quote!(u32)
-        }
+        parse_quote!(i32)
+    }
+}
+
+fn minimum_unsigned_type(max: usize) -> Ident {
+    if max < 0x100 {
+        parse_quote!(u8)
+    } else if max < 0x10000 {
+        parse_quote!(u16)
+    } else {
+        parse_quote!(u32)
     }
 }
 
@@ -1789,8 +1789,8 @@ impl Lemon {
         }
 
         /* Generate the defines */
-        let yycodetype = minimum_size_type(true, self.nsymbol+1);
-        let yyactiontype = minimum_size_type(false, self.states.len() + self.rules.len() + 5);
+        let yycodetype = minimum_signed_type(self.nsymbol + 1);
+        let yyactiontype = minimum_unsigned_type(self.states.len() + self.rules.len() + 5);
         let yynocode = (self.nsymbol + 1) as i32;
         let yywildcard = if let Some(ref wildcard) = self.wildcard {
             let wildcard = wildcard.upgrade();
@@ -1802,12 +1802,11 @@ impl Lemon {
         } else {
             0
         };
+        let yywildcard = Literal::usize_unsuffixed(yywildcard);
 
         src.extend(quote!{
-            type YYCODETYPE = #yycodetype;
-            type YYACTIONTYPE = #yyactiontype;
             const YYNOCODE: i32 = #yynocode;
-            const YYWILDCARD: YYCODETYPE = #yywildcard as YYCODETYPE;
+            const YYWILDCARD: #yycodetype = #yywildcard;
         });
 
         /*
@@ -2043,10 +2042,11 @@ impl Lemon {
                     None => self.nsymbol,
                     Some(a) => a.lookahead ,
                 };
-                quote!(#a as YYCODETYPE)
+                let a = Literal::usize_unsuffixed(a);
+                quote!(#a)
             });
         let yy_lookahead_len = yy_lookahead.len();
-        src.extend(quote!(static YY_LOOKAHEAD: [YYCODETYPE; #yy_lookahead_len] = [ #(#yy_lookahead),* ];));
+        src.extend(quote!(static YY_LOOKAHEAD: [#yycodetype; #yy_lookahead_len] = [ #(#yy_lookahead),* ];));
 
         /* Output the yy_shift_ofst[] table */
         let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
@@ -2057,11 +2057,12 @@ impl Lemon {
         src.extend(quote!(const YY_SHIFT_COUNT: i32 = #n as i32;));
         src.extend(quote!(const YY_SHIFT_MIN: i32 = #min_tkn_ofst;));
         src.extend(quote!(const YY_SHIFT_MAX: i32 = #max_tkn_ofst;));
-        let yy_shift_ofst_type = minimum_size_type(true, max_tkn_ofst as usize);
+        let yy_shift_ofst_type = minimum_signed_type(max_tkn_ofst as usize);
         let yy_shift_ofst = self.states[0..=n].iter().map(|stp| {
                 let stp = stp.borrow();
                 let ofst = stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1);
-                quote!(#ofst as #yy_shift_ofst_type)
+                let ofst = Literal::i32_unsuffixed(ofst);
+                quote!(#ofst)
             });
         let yy_shift_ofst_len = yy_shift_ofst.len();
         src.extend(quote!(static YY_SHIFT_OFST: [#yy_shift_ofst_type; #yy_shift_ofst_len] = [ #(#yy_shift_ofst),* ];));
@@ -2075,21 +2076,23 @@ impl Lemon {
         src.extend(quote!(const YY_REDUCE_COUNT: i32 = #n as i32;));
         src.extend(quote!(const YY_REDUCE_MIN: i32 = #min_nt_ofst;));
         src.extend(quote!(const YY_REDUCE_MAX: i32 = #max_nt_ofst;));
-        let yy_reduce_ofst_type = minimum_size_type(true, max_nt_ofst as usize);
+        let yy_reduce_ofst_type = minimum_signed_type(max_nt_ofst as usize);
         let yy_reduce_ofst = self.states[0..=n].iter().map(|stp| {
                 let stp = stp.borrow();
                 let ofst = stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1);
-                quote!(#ofst as #yy_reduce_ofst_type)
+                let ofst = Literal::i32_unsuffixed(ofst);
+                quote!(#ofst)
             });
         let yy_reduce_ofst_len = yy_reduce_ofst.len();
         src.extend(quote!(static YY_REDUCE_OFST: [#yy_reduce_ofst_type; #yy_reduce_ofst_len] = [ #(#yy_reduce_ofst),* ];));
 
         let yy_default = self.states.iter().map(|stp| {
                 let dflt = stp.borrow().i_dflt;
-                quote!(#dflt as YYACTIONTYPE)
+                let dflt = Literal::usize_unsuffixed(dflt);
+                quote!(#dflt)
             });
         let yy_default_len = yy_default.len();
-        src.extend(quote!(static YY_DEFAULT: [YYACTIONTYPE; #yy_default_len] = [ #(#yy_default),* ];));
+        src.extend(quote!(static YY_DEFAULT: [#yyactiontype; #yy_default_len] = [ #(#yy_default),* ];));
 
         /* Generate the table of fallback tokens. */
         let mx = self.symbols.iter().enumerate().rfind(|(_,sy)|
@@ -2126,10 +2129,11 @@ impl Lemon {
         let yy_rule_info = self.rules.iter().map(|rp| {
                 let lhs = rp.borrow().lhs.upgrade();
                 let index = lhs.borrow().index;
-                quote!(#index as YYCODETYPE)
+                let index = Literal::usize_unsuffixed(index);
+                quote!(#index)
             });
         let yy_rule_info_len = yy_rule_info.len();
-        src.extend(quote!(static YY_RULE_INFO: [YYCODETYPE; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
+        src.extend(quote!(static YY_RULE_INFO: [#yycodetype; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
 
         let unit_type : Type = parse_quote!(());
         let yyextratype = self.arg.clone().unwrap_or(unit_type.clone());
@@ -2363,7 +2367,10 @@ impl Lemon {
 
 
             fn yy_shift #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_with_cb_where {
-                yy.yystack.push(YYStackEntry{stateno: new_state, major: major, minor: minor});
+                yy.yystack.push(YYStackEntry {
+                    stateno: new_state,
+                    major,
+                    minor});
             }
             fn yy_parse_failed #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) -> CB::Error
                 #yy_generics_with_cb_where {
