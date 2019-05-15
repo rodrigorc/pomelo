@@ -1767,7 +1767,7 @@ impl Lemon {
                 if let NonTerminal{ref mut rules, ..} = lhs.borrow_mut().typ {
                     rules.push((&rule).into());
                 } else {
-                    unreachable!();
+                    unreachable!("lhs is not a non-terminal");
                 }
                 self.rules.push(rule);
             }
@@ -2151,11 +2151,31 @@ impl Lemon {
                                         ** is the value of the token  */
             }
 
+            enum YYStatus<T> {
+                Normal,
+                Failed,
+                Accepted(T),
+            }
+            impl<T> YYStatus<T> {
+                fn unwrap(self) -> T {
+                    match self {
+                        YYStatus::Accepted(t) => t,
+                        _ => unreachable!("accepted without data"),
+                    }
+                }
+                fn is_normal(&self) -> bool {
+                    match self {
+                        YYStatus::Normal => true,
+                        _ => false,
+                    }
+                }
+            }
+
             pub struct Parser #yy_generics_with_cb_impl #yy_generics_with_cb_where {
                 yyerrcnt: i32, /* Shifts left before out of the error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
-                accepted: Option<#yyroottype>,
+                yystatus: YYStatus<#yyroottype>,
                 cb: CB,
             }
 
@@ -2165,7 +2185,7 @@ impl Lemon {
                         yyerrcnt: -1,
                         yystack: Vec::new(),
                         extra: extra,
-                        accepted: None,
+                        yystatus: YYStatus::Normal,
                         cb
                     };
                     p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0(())});
@@ -2186,7 +2206,7 @@ impl Lemon {
                 }
                 pub fn end_of_input(mut self) -> Result<#yyroottype, CB::Error> {
                     yy_parse_token(&mut self, 0, YYMinorType::YY0(()))?;
-                    Ok(self.accepted.unwrap())
+                    Ok(self.yystatus.unwrap())
                 }
             }
 
@@ -2195,11 +2215,11 @@ impl Lemon {
                 #yy_generics_with_cb_where {
                 let yyendofinput = yymajor==0;
                 let mut yyerrorhit = false;
-                if yy.yystack.is_empty() {
+                if !yy.yystatus.is_normal() {
                     panic!("Cannot call parse after failure");
                 }
 
-                while !yy.yystack.is_empty() {
+                while yy.yystatus.is_normal() {
                     let yyact = yy_find_shift_action(yy, yymajor);
                     if yyact < YYNSTATE {
                         assert!(!yyendofinput);  /* Impossible to shift the $ token */
@@ -2235,12 +2255,11 @@ impl Lemon {
                                 yy_syntax_error(yy, yymajor, &yyminor);
                             }
                             let yymx = yy.yystack[yy.yystack.len() - 1].major;
-                            if yymx==YYERRORSYMBOL || yyerrorhit {
+                            if yymx == YYERRORSYMBOL || yyerrorhit {
                                 break;
                             } else {
-                                let mut yyact;
                                 while !yy.yystack.is_empty() {
-                                    yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
+                                    let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
                                     if yyact < YYNSTATE {
                                         if !yyendofinput {
                                             yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0(()));
@@ -2250,6 +2269,7 @@ impl Lemon {
                                     yy.yystack.pop().unwrap();
                                 }
                                 if yy.yystack.is_empty() || yyendofinput {
+                                    yy.yystatus = YYStatus::Failed;
                                     return Err(yy_parse_failed(yy));
                                 }
                             }
@@ -2270,6 +2290,7 @@ impl Lemon {
                             }
                             yy.yyerrcnt = 3;
                             if yyendofinput {
+                                yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));
                             }
                             break;
@@ -2374,23 +2395,23 @@ impl Lemon {
             let ty_span = rp.code.span();
             yyrules.push(quote_spanned!(ty_span=> (#index, extra) => { #code }));
         }
-        yyrules.push(quote!(_ => unreachable!()));
+        yyrules.push(quote!(_ => unreachable!("no rule to apply")));
 
         let accept_code = match types.get(&yyroottype) {
             Some(n) => {
                 let yyroot = Ident::new(&format!("YY{}", n), Span::call_site());
                 quote!(
                     if let YYMinorType::#yyroot(root) = yygotominor {
-                        yy.accepted = Some(root);
+                        yy.yystatus = YYStatus::Accepted(root);
                         yy_accept(yy)
                     } else {
-                        unreachable!();
+                        unreachable!("unexpected root type");
                     }
                 )
             }
             None => {
                 quote!(
-                    yy.accepted = Some(());
+                    yy.yystatus = YYStatus::Accepted(());
                     yy_accept(yy)
                 )
             }
@@ -2482,7 +2503,7 @@ impl Lemon {
         code.extend(quote!(
             let yyres : #yyrestype = match (#(#yymatch),*) {
                 (#(#yypattern),*) => { #rule_code }
-                _ => unreachable!()
+                _ => unreachable!("impossible pattern")
             };
         ));
 
