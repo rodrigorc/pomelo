@@ -51,11 +51,14 @@ impl Parse for Decls {
 mod kw {
     custom_keyword!(module);
     custom_keyword!(include);
+    custom_keyword!(syntax_error);
+    custom_keyword!(parse_fail);
     custom_keyword!(left);
     custom_keyword!(right);
     custom_keyword!(nonassoc);
     custom_keyword!(default_type);
     custom_keyword!(extra_argument);
+    custom_keyword!(error);
     custom_keyword!(start_symbol);
     custom_keyword!(fallback);
     custom_keyword!(wildcard);
@@ -82,7 +85,7 @@ impl Parse for Decl {
                 input.parse::<Token![;]>()?;
                 Ok(Decl::Module(ident))
             } else if lookahead.peek(kw::include) {
-                // %include { rust-code } [;]
+                // %include { rust-items } [;]
                 input.parse::<kw::include>()?;
                 let code;
                 braced!(code in input);
@@ -94,6 +97,22 @@ impl Parse for Decl {
                     input.parse::<Token![;]>()?;
                 }
                 Ok(Decl::Include(items))
+            } else if lookahead.peek(kw::syntax_error) {
+                // %syntax_error { rust-block }
+                input.parse::<kw::syntax_error>()?;
+                let code = input.parse()?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                }
+                Ok(Decl::SyntaxError(code))
+            } else if lookahead.peek(kw::parse_fail) {
+                // %parse_fail { rust-block }
+                input.parse::<kw::parse_fail>()?;
+                let code = input.parse()?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                }
+                Ok(Decl::ParseFail(code))
             } else if lookahead.peek(kw::left) {
                 // %left token1 token2 ... ;
                 input.parse::<kw::left>()?;
@@ -133,6 +152,12 @@ impl Parse for Decl {
                 let typ = input.parse()?;
                 input.parse::<Token![;]>()?;
                 Ok(Decl::ExtraArgument(typ))
+            } else if lookahead.peek(kw::error) {
+                // %error type;
+                input.parse::<kw::error>()?;
+                let typ = input.parse()?;
+                input.parse::<Token![;]>()?;
+                Ok(Decl::Error(typ))
             } else if lookahead.peek(kw::start_symbol) {
                 // %start_symbol id;
                 input.parse::<kw::start_symbol>()?;

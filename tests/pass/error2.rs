@@ -15,7 +15,7 @@ fn error() -> Result<(), String> {
     use parser::*;
     use Token::*;
 
-    let mut p = Parser::new(String::new(), SimpleCallback);
+    let mut p = Parser::new(String::new());
 
     for t in vec![
         One, Two, Three, Eol,

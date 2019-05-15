@@ -9,9 +9,9 @@ pomelo! {
 }
 
 #[test]
-fn wildcard() -> Result<(), String> {
+fn wildcard() -> Result<(), ()> {
     use parser::*;
-    let mut p = Parser::new((), SimpleCallback);
+    let mut p = Parser::new();
     p.parse(Token::One(0))?;
     p.parse(Token::Two)?;
     p.parse(Token::One(0))?;

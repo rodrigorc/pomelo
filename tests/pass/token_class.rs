@@ -17,9 +17,9 @@ pomelo! {
 }
 
 #[test]
-fn token_class() -> Result<(), String> {
+fn token_class() -> Result<(), ()> {
     use parser::*;
-    let mut parse = Parser::new((), SimpleCallback);
+    let mut parse = Parser::new();
     parse.parse(Token::One(1))?;
     parse.parse(Token::Two(2))?;
     parse.parse(Token::Three(3))?;

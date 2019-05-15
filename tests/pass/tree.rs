@@ -2,6 +2,10 @@ use pomelo::*;
 use super::toy_lexer;
 
 pomelo! {
+    %error String;
+    %parse_fail {
+        "Parse error".to_string()
+    }
     %include {
         use super::toy_lexer::{self, TestTree, TestToken};
         use pomelo::*;
@@ -20,7 +24,7 @@ pomelo! {
         }
 
         pub fn parse_tree(input: &str) -> Result<TestTree, String> {
-            let mut p = Parser::new((), SimpleCallback);
+            let mut p = Parser::new();
             for tok in toy_lexer::tokenize(input) {
                 let tok = match tok {
                     TestToken::Number(i) => Token::Integer(i),
@@ -34,7 +38,7 @@ pomelo! {
         pub fn parse_tree2(input: &str) -> Result<TestTree, String> {
             use proc_macro2;
             let tokstream = input.parse().map_err(|e: proc_macro2::LexError| "lexer error")?;
-            let mut p = Parser::new((), SimpleCallback);
+            let mut p = Parser::new();
 
             lexer::parse(tokstream, |tk| {
                 let tk = match tk {

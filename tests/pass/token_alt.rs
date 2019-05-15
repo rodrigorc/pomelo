@@ -11,9 +11,9 @@ pomelo! {
 }
 
 #[test]
-fn token_alt() -> Result<(), String> {
+fn token_alt() -> Result<(), ()> {
     use parser::*;
-    let mut parse = Parser::new((), SimpleCallback);
+    let mut parse = Parser::new();
     parse.parse(Token::One(1))?;
     parse.parse(Token::Two(2))?;
     parse.parse(Token::Three(3))?;

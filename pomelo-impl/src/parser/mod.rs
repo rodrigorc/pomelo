@@ -241,6 +241,8 @@ struct State {
 pub struct Lemon {
     module: Ident,
     includes: Vec<Item>,
+    syntax_error: Block,
+    parse_fail: Block,
     token_enum: Option<ItemEnum>,       //The enum Token{}, if specified with %token
     states: Vec<Rc<RefCell<State>>>,     //Table of states sorted by state number
     rules: Vec<Rc<RefCell<Rule>>>,        //List of all rules
@@ -250,6 +252,7 @@ pub struct Lemon {
     err_sym: WeakSymbol,      //The error symbol
     wildcard: Option<WeakSymbol>,     //The symbol that matches anything
     arg: Option<Type>,        //Declaration of the extra argument to parser
+    err_type: Option<Type>,        //Declaration of the error type of the parser
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
     var_type: Option<Type>,
@@ -568,6 +571,8 @@ impl Lemon {
         let mut lem = Lemon {
             module: parse_quote!(parser),
             includes: Vec::new(),
+            syntax_error: parse_quote!({}),
+            parse_fail: parse_quote!({}),
             token_enum: None,
             states: Vec::new(),
             rules: Vec::new(),
@@ -577,6 +582,7 @@ impl Lemon {
             err_sym,
             wildcard: None,
             arg: None,
+            err_type: None,
             nconflict: 0,
             has_fallback: false,
 
@@ -1606,6 +1612,12 @@ impl Lemon {
             Decl::Include(code) => {
                 self.includes.extend(code);
             }
+            Decl::SyntaxError(code) => {
+                self.syntax_error = code;
+            }
+            Decl::ParseFail(code) => {
+                self.parse_fail = code;
+            }
             Decl::Type(id, ty) => {
                 let nst = if is_uppercase(&id) {
                     NewSymbolType::Terminal
@@ -1646,6 +1658,12 @@ impl Lemon {
                     return error_span(ty.span(), "Extra argument type already defined");
                 }
                 self.arg = Some(ty);
+            }
+            Decl::Error(ty) => {
+                if self.err_type.is_some() {
+                    return error_span(ty.span(), "Error type already defined");
+                }
+                self.err_type = Some(ty);
             }
             Decl::StartSymbol(id) => {
                 if self.start.is_some() {
@@ -1781,7 +1799,6 @@ impl Lemon {
             #![allow(dead_code)]
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
-            use super::PomeloCallback;
         });
 
         for code in &self.includes {
@@ -1870,6 +1887,9 @@ impl Lemon {
         }
 
         let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
+
+        let yysyntaxerror = &self.syntax_error;
+        let yyparsefail = &self.parse_fail;
 
         /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
         let minor_types = types.iter().map(|(k, v)| {
@@ -2138,12 +2158,8 @@ impl Lemon {
         let unit_type : Type = parse_quote!(());
         let yyextratype = self.arg.clone().unwrap_or(unit_type.clone());
         let start = self.start.as_ref().unwrap().upgrade();
-        let yyroottype = start.borrow().data_type.clone().unwrap_or(unit_type);
-
-        let mut yy_generics_with_cb = yytoken.generics.clone();
-        yy_generics_with_cb.params.push(parse_quote!{ CB: PomeloCallback<#yyextratype> } );
-
-        let (yy_generics_with_cb_impl, yy_generics_with_cb, yy_generics_with_cb_where) = yy_generics_with_cb.split_for_impl();
+        let yyroottype = start.borrow().data_type.clone().unwrap_or(unit_type.clone());
+        let yyerrtype = self.err_type.clone().unwrap_or(unit_type.clone());
 
         src.extend(quote!{
             #[derive(Debug)]
@@ -2175,25 +2191,30 @@ impl Lemon {
                 }
             }
 
-            pub struct Parser #yy_generics_with_cb_impl #yy_generics_with_cb_where {
+            pub struct Parser #yy_generics_impl #yy_generics_where {
                 yyerrcnt: i32, /* Shifts left before out of the error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 yystatus: YYStatus<#yyroottype>,
-                cb: CB,
             }
+        });
 
-            impl #yy_generics_with_cb_impl Parser #yy_generics_with_cb #yy_generics_with_cb_where {
-                pub fn new(extra: #yyextratype, cb: CB) -> Self {
-                    let mut p = Parser {
-                        yyerrcnt: -1,
-                        yystack: Vec::new(),
-                        extra: extra,
-                        yystatus: YYStatus::Normal,
-                        cb
-                    };
-                    p.yystack.push(YYStackEntry{stateno: 0, major: 0, minor: YYMinorType::YY0(())});
-                    p
+        let impl_parser = if yyextratype == unit_type {
+            quote!{
+                pub fn new() -> Self {
+                    Self::new_priv(())
+                }
+                pub fn end_of_input(mut self) -> Result<#yyroottype, #yyerrtype> {
+                    self.end_of_input_priv().map(|r| r.0)
+                }
+            }
+        } else {
+            quote!{
+                pub fn new(extra: #yyextratype) -> Self {
+                    Self::new_priv(extra)
+                }
+                pub fn end_of_input(mut self) -> Result<(#yyroottype, #yyextratype), #yyerrtype> {
+                    self.end_of_input_priv()
                 }
                 pub fn into_extra(self) -> #yyextratype {
                     self.extra
@@ -2204,19 +2225,38 @@ impl Lemon {
                 pub fn extra_mut(&mut self) -> &mut #yyextratype {
                     &mut self.extra
                 }
-                pub fn parse(&mut self, token: Token #yy_generics) -> Result<(), CB::Error> {
+            }
+        };
+        src.extend(quote!{
+            impl #yy_generics_impl Parser #yy_generics #yy_generics_where {
+                #impl_parser
+                pub fn parse(&mut self, token: Token #yy_generics) -> Result<(), #yyerrtype> {
                     let (a, b) = token_value(token);
                     yy_parse_token(self, a, b)
                 }
-                pub fn end_of_input(mut self) -> Result<#yyroottype, CB::Error> {
+                fn new_priv(extra: #yyextratype) -> Self {
+                    Parser {
+                        yyerrcnt: -1,
+                        yystack: vec![YYStackEntry {
+                            stateno: 0,
+                            major: 0,
+                            minor: YYMinorType::YY0(())
+                        }],
+                        extra: extra,
+                        yystatus: YYStatus::Normal,
+                    }
+                }
+                fn end_of_input_priv(mut self) -> Result<(#yyroottype, #yyextratype), #yyerrtype> {
                     yy_parse_token(&mut self, 0, YYMinorType::YY0(()))?;
-                    Ok(self.yystatus.unwrap())
+                    Ok((self.yystatus.unwrap(), self.extra))
                 }
             }
+        });
 
-            fn yy_parse_token #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb,
-                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), CB::Error>
-                #yy_generics_with_cb_where {
+        src.extend(quote!{
+            fn yy_parse_token #yy_generics_impl(yy: &mut Parser #yy_generics,
+                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+                #yy_generics_where {
                 let yyendofinput = yymajor==0;
                 let mut yyerrorhit = false;
                 if !yy.yystatus.is_normal() {
@@ -2308,7 +2348,7 @@ impl Lemon {
              ** Find the appropriate action for a parser given the terminal
              ** look-ahead token look_ahead.
              */
-            fn yy_find_shift_action #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, look_ahead: i32) -> i32 #yy_generics_with_cb_where {
+            fn yy_find_shift_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where {
 
                 let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
 
@@ -2347,7 +2387,7 @@ impl Lemon {
              ** Find the appropriate action for a parser given the non-terminal
              ** look-ahead token iLookAhead.
              */
-            fn yy_find_reduce_action #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, look_ahead: i32) -> i32 #yy_generics_with_cb_where {
+            fn yy_find_reduce_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where {
                 let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
                 if YYERRORSYMBOL != 0 && stateno > YY_REDUCE_COUNT {
                     return YY_DEFAULT[stateno as usize] as i32;
@@ -2366,26 +2406,22 @@ impl Lemon {
             }
 
 
-            fn yy_shift #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_with_cb_where {
+            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_where {
                 yy.yystack.push(YYStackEntry {
                     stateno: new_state,
                     major,
                     minor});
             }
-            fn yy_parse_failed #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) -> CB::Error
-                #yy_generics_with_cb_where {
+            fn yy_parse_failed #yy_generics_impl(yy: &mut Parser #yy_generics) -> #yyerrtype
+                #yy_generics_where {
                 yy.yystack.clear();
-                yy.cb.parse_fail(&mut yy.extra)
+                let extra = &mut yy.extra;
+                #yyparsefail
             }
-            fn yy_syntax_error #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yymajor: i32, yyminor: &YYMinorType #yy_generics)
-                #yy_generics_with_cb_where {
-                //TODO send token
-                yy.cb.syntax_error(&mut yy.extra);
-            }
-            fn yy_accept #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb) -> Result<(), CB::Error>
-                #yy_generics_with_cb_where {
-                yy.yystack.clear();
-                yy.cb.parse_accept(&mut yy.extra)
+            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: &YYMinorType #yy_generics)
+                #yy_generics_where {
+                let extra = &mut yy.extra;
+                #yysyntaxerror
             }
         });
 
@@ -2410,7 +2446,7 @@ impl Lemon {
                 quote!(
                     if let YYMinorType::#yyroot(root) = yygotominor {
                         yy.yystatus = YYStatus::Accepted(root);
-                        yy_accept(yy)
+                        yy.yystack.clear();
                     } else {
                         unreachable!("unexpected root type");
                     }
@@ -2419,14 +2455,14 @@ impl Lemon {
             None => {
                 quote!(
                     yy.yystatus = YYStatus::Accepted(());
-                    yy_accept(yy)
+                    yy.yystack.clear();
                 )
             }
         };
 
         let yyreduce_fn = quote!(
-            fn yy_reduce #yy_generics_with_cb_impl(yy: &mut Parser #yy_generics_with_cb, yyruleno: i32) -> Result<(), CB::Error>
-                #yy_generics_with_cb_where
+            fn yy_reduce #yy_generics_impl(yy: &mut Parser #yy_generics, yyruleno: i32) -> Result<(), #yyerrtype>
+                #yy_generics_where
             {
                 let yygotominor: YYMinorType #yy_generics = match (yyruleno, &mut yy.extra) {
                     #(#yyrules)*
@@ -2439,6 +2475,7 @@ impl Lemon {
                 } else {
                     assert!(yyact == YYNSTATE + YYNRULE + 1);
                     #accept_code
+                    Ok(())
                 }
             }
         );

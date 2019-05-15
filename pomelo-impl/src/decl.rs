@@ -11,10 +11,13 @@ pub enum Associativity {
 pub enum Decl {
     Module(Ident),
     Include(Vec<Item>),
+    SyntaxError(Block),
+    ParseFail(Block),
     Type(Ident, Type),
     Assoc(Associativity, Vec<Ident>),
     DefaultType(Type),
     ExtraArgument(Type),
+    Error(Type),
     StartSymbol(Ident),
     Fallback(Ident, Vec<Ident>),
     Wildcard(Ident),

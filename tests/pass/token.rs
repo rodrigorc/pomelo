@@ -18,9 +18,9 @@ pomelo! {
 }
 
 #[test]
-fn generic_parse() -> Result<(), String> {
+fn generic_parse() -> Result<(), ()> {
     use parser::*;
-    let mut parse = Parser::new((), SimpleCallback);
+    let mut parse = Parser::new();
     let x = 42;
     parse.parse(Token::<_, u8>::Terminal(&x))?;
     let res = parse.end_of_input()?;

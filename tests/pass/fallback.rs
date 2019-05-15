@@ -10,9 +10,9 @@ pomelo! {
 
 
 #[test]
-fn fallback() -> Result<(), String> {
+fn fallback() -> Result<(), ()> {
     use parser::*;
-    let mut p = Parser::new((), SimpleCallback);
+    let mut p = Parser::new();
     p.parse(Token::One)?;
     p.parse(Token::Two)?;
     p.parse(Token::Three)?;

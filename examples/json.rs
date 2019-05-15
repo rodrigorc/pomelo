@@ -14,7 +14,7 @@ pub enum JObject {
 impl std::str::FromStr for JObject {
     type Err = String;
     fn from_str(input: &str) -> Result<JObject, String> {
-        let mut p = json::Parser::new((), SimpleCallback);
+        let mut p = json::Parser::new();
         let tok_stream = input.parse().map_err(|_| "Lexer Error")?;
         lexer::parse::<String, _>(tok_stream, |tk| {
             use proc_macro2::TokenTree;
@@ -53,10 +53,10 @@ impl std::str::FromStr for JObject {
                 }
                 _ => unimplemented!()
             };
-            p.parse(tk)?;
+            p.parse(tk).map_err(|_| "Parser error")?;
             Ok(())
         })?;
-        let j = p.end_of_input()?;
+        let j = p.end_of_input().map_err(|_| "Parser error")?;
         Ok(j)
     }
 }
@@ -107,7 +107,9 @@ fn main() {
 
     for arg in args {
         println!("arg: '{}'", arg);
-        let jobj : JObject = arg.parse().unwrap();
-        println!("JSON: '{:#?}'", jobj);
+        match arg.parse() {
+            Ok::<JObject,_>(j) => println!("JSON: '{:#?}'", j),
+            Err(e) => println!("Err: '{:#?}'", e)
+        }
     }
 }
