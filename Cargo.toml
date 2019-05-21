@@ -4,15 +4,11 @@ version = "0.1.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
 edition = "2018"
 
-[features]
-lexer = ["proc-macro2"]
-default = []
-
 [dependencies]
 pomelo-impl = { version = "=0.1.0", path="pomelo-impl"}
-proc-macro2 = { version = "*", optional = true }
 
 [dev-dependencies]
 quote = "*"
 proc-macro2 = "*"
 compiletest_rs = { version = "*", features = ["stable"] }
+pm-lexer = { version = "=0.1.0", path="pm-lexer" }

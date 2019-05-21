@@ -1,3 +1,4 @@
+extern crate pm_lexer as lexer;
 use pomelo::*;
 use std::collections::HashMap;
 

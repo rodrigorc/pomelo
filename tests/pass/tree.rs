@@ -1,3 +1,4 @@
+extern crate pm_lexer as lexer;
 use pomelo::*;
 use super::toy_lexer;
 
@@ -8,7 +9,7 @@ pomelo! {
     }
     %include {
         use super::toy_lexer::{self, TestTree, TestToken};
-        use pomelo::*;
+        use super::lexer;
 
         fn char_to_token(c: char) -> Result<Token, String> {
             let tk = match c {
