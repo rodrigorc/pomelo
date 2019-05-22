@@ -60,6 +60,7 @@ struct Rule {
     rhs: Vec<(WeakSymbolWithSpan, Option<Pat>)>,   //RHS symbols and aliases
     code: Option<Block>,//The code executed when this rule is reduced
     prec_sym: Option<WeakSymbol>, //Precedence symbol for this rule
+    precedence: Option<Precedence>, //Actual precedence for this rule
     index: usize,         //An index number for this rule
     can_reduce: bool,   //True if this rule is ever reduced
 }
@@ -80,11 +81,11 @@ use SymbolType::*;
 struct Symbol {
     name: String,               //Name of the symbol
     index: usize,               //Index number for this symbol
-    typ: SymbolType,        //Either Terminal or NonTerminal
+    typ: SymbolType,            //Either Terminal or NonTerminal
     fallback: Option<WeakSymbol>, //Fallback token in case this token desn't parse
-    assoc: Option<Precedence>,  //Precedence
+    precedence: Option<Precedence>,  //Precedence
     use_cnt: i32,               //Number of times used
-    data_type: Option<Type>,  //Data type held by this object
+    data_type: Option<Type>,    //Data type held by this object
     dt_num: usize,              //The data type number (0 is always ()). The YY{} element of stack is the correct data type for this object
 }
 
@@ -97,6 +98,7 @@ impl Symbol {
     }
 }
 
+//Do not use Ord, because that requires Eq, that we do not need
 fn symbol_cmp(a: &RcSymbol, b: &RcSymbol) -> Ordering {
     fn symbol_ord(s: &SymbolType) -> i32 {
         match s {
@@ -244,12 +246,12 @@ pub struct Lemon {
     syntax_error: Block,
     parse_fail: Block,
     token_enum: Option<ItemEnum>,       //The enum Token{}, if specified with %token
-    states: Vec<Rc<RefCell<State>>>,     //Table of states sorted by state number
-    rules: Vec<Rc<RefCell<Rule>>>,        //List of all rules
-    nsymbol: usize,
-    nterminal: usize,
+    states: Vec<Rc<RefCell<State>>>,    //Table of states sorted by state number
+    rules: Vec<Rc<RefCell<Rule>>>,      //List of all rules
+    default_index: usize,               //The index of the default symbol (always the last one in symbols)
+    num_terminals: usize,               //symbols[0..num_terminals] are the terminal symbols
     symbols: Vec<RcSymbol>,   //Sorted array of symbols
-    err_sym: WeakSymbol,      //The error symbol
+    error_index: usize,
     wildcard: Option<WeakSymbol>,     //The symbol that matches anything
     arg: Option<Type>,        //Declaration of the extra argument to parser
     err_type: Option<Type>,        //Declaration of the error type of the parser
@@ -262,8 +264,8 @@ pub struct Lemon {
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "SYM {} {}", self.index, self.name)?;
-        if let Some(ref assoc) = self.assoc {
-            writeln!(f, "    assoc {:?}", assoc)?;
+        if let Some(ref precedence) = self.precedence {
+            writeln!(f, "    precedence {:?}", precedence)?;
         }
         match self.typ {
             Terminal => {
@@ -553,21 +555,16 @@ fn error_span<T>(span: Span, msg: &'static str) -> syn::Result<T> {
     Err(syn::Error::new(span, msg))
 }
 
-fn is_uppercase(id: &Ident) -> bool {
+fn is_terminal_ident(id: &Ident) -> bool {
     id.to_string().chars().next().unwrap().is_ascii_uppercase()
 }
 
-fn is_lowercase(id: &Ident) -> bool {
+fn is_nonterminal_ident(id: &Ident) -> bool {
     id.to_string().chars().next().unwrap().is_ascii_lowercase()
 }
 
 impl Lemon {
     pub fn new_from_decls(decls: Vec<Decl>) -> syn::Result<Lemon> {
-        let mut symbols = Vec::new();
-
-        Lemon::symbol_new(&mut symbols, "$", NewSymbolType::Terminal);
-        let err_sym = Lemon::symbol_new(&mut symbols, "error", NewSymbolType::NonTerminal);
-
         let mut lem = Lemon {
             module: parse_quote!(parser),
             includes: Vec::new(),
@@ -576,10 +573,10 @@ impl Lemon {
             token_enum: None,
             states: Vec::new(),
             rules: Vec::new(),
-            nsymbol: 0,
-            nterminal: 0,
-            symbols,
-            err_sym,
+            default_index: 0,
+            num_terminals: 0,
+            symbols: Vec::new(),
+            error_index: 0,
             wildcard: None,
             arg: None,
             err_type: None,
@@ -590,6 +587,10 @@ impl Lemon {
             start: None,
         };
 
+        lem.symbol_new("$", NewSymbolType::Terminal);
+        lem.symbol_new("error", NewSymbolType::NonTerminal);
+
+
         let mut pdata = ParserData {
             precedence: 0,
         };
@@ -598,7 +599,8 @@ impl Lemon {
             lem.parse_one_decl(&mut pdata, decl)?;
         }
 
-        Lemon::symbol_new(&mut lem.symbols, "{default}", NewSymbolType::NonTerminal);
+        lem.symbol_new("{default}", NewSymbolType::NonTerminal);
+
         Ok(lem)
     }
     pub fn module_name(&self) -> &Ident {
@@ -623,28 +625,29 @@ impl Lemon {
         self.resort_states();
         let src = self.generate_source()?;
         //println!("{:?}", self);
-        //println!("nsymbol={}, nterminal={}", self.nsymbol, self.nterminal);
+        //println!("default_index={}, num_terminals={}", self.default_index, self.num_terminals);
         Ok(src)
     }
 
     pub fn prepare(&mut self) {
-        //keep $ at 0
-        self.symbols[1..].sort_by(symbol_cmp);
+        //First there are all the Terminals, the first one is $
+        //Then the NonTerminals, the last one is {default}
+        //And finally the MultiTerminals
+        self.symbols.sort_by(symbol_cmp);
 
+        let mut last_terminal = 0;
+        let mut default_index = 0;
         for (i,s) in self.symbols.iter().enumerate() {
             s.borrow_mut().index = i;
             match s.borrow().typ {
-                Terminal => {
-                    self.nterminal = i;
-                }
-                NonTerminal{..} => {
-                    self.nsymbol = i;
-                }
-                MultiTerminal(_) => {
-                }
+                Terminal => last_terminal = i,
+                NonTerminal {..} => default_index = i,
+                _ => (),
             }
         }
-        self.nterminal += 1;
+        self.num_terminals = last_terminal + 1;
+        self.default_index = default_index;
+        self.error_index = self.num_terminals; //error symbol is the first NonTerminal, so it happens to be just here
 
         if self.start.is_none() {
             self.start = Some(self.rules.first().unwrap().borrow().lhs.0.clone());
@@ -663,33 +666,28 @@ impl Lemon {
     fn find_rule_precedences(&mut self) {
         for rp in &self.rules {
             let mut rp = rp.borrow_mut();
-            if rp.prec_sym.is_some() {
+            if let Some(ref ps) = rp.prec_sym {
+                rp.precedence = ps.upgrade().borrow().precedence;
                 continue;
             }
-
-            let mut prec_sym = None;
-       'ps: for (sp,_) in rp.rhs.iter() {
+            for (sp, _) in rp.rhs.iter() {
                 let sp = sp.upgrade();
                 let b = sp.borrow();
                 match b.typ {
                     MultiTerminal(ref sub_sym) => {
-                        for msp in sub_sym {
-                            let msp = msp.upgrade();
-                            if msp.borrow().assoc.is_some() {
-                                prec_sym = Some(sp.clone());
-                                break 'ps;
-                            }
+                        if let Some(prec) = sub_sym.into_iter().find_map(|msp| msp.upgrade().borrow().precedence) {
+                            rp.prec_sym = Some(sp.clone().into());
+                            rp.precedence = Some(prec);
+                            break;
                         }
                     }
-                    _ if b.assoc.is_some() => {
-                        prec_sym = Some(sp.clone());
-                        break 'ps;
+                    _ if b.precedence.is_some() => {
+                        rp.prec_sym = Some(sp.clone().into());
+                        rp.precedence = b.precedence;
+                        break;
                     }
                     _ => {}
                 }
-            }
-            if let Some(ps) = prec_sym {
-                rp.prec_sym = Some(ps.into());
             }
         }
     }
@@ -1009,7 +1007,7 @@ impl Lemon {
                 let cfp = cfp.borrow_mut();
                 let rule = cfp.rule.upgrade();
                 if cfp.dot == rule.borrow().rhs.len() { /* Is dot at extreme right? */
-                    for j in 0 .. self.nterminal {
+                    for j in 0 .. self.num_terminals {
                         if cfp.fws.contains(&j) {
                             /* Add a reduce action to the state "stp" which will reduce by the
                              ** rule "cfp->rp" if the lookahead symbol is "lemp->symbols[j]" */
@@ -1099,9 +1097,8 @@ impl Lemon {
             (Shift(x), Reduce(y)) => {
                 let spx = apx.sp.upgrade();
                 let ry = y.upgrade();
-                let ref spy = ry.borrow().prec_sym;
-                let precx = spx.borrow().assoc;
-                let precy = Lemon::get_precedence(&spy);
+                let precx = spx.borrow().precedence;
+                let precy = ry.borrow().precedence;
 
                 match (precx, precy) {
                     (Some(px), Some(py)) => {
@@ -1117,10 +1114,8 @@ impl Lemon {
             (Reduce(x), Reduce(y)) => {
                 let rx = x.upgrade();
                 let ry = y.upgrade();
-                let ref spx = rx.borrow().prec_sym;
-                let ref spy = ry.borrow().prec_sym;
-                let precx = Lemon::get_precedence(&spx);
-                let precy = Lemon::get_precedence(&spy);
+                let precx = rx.borrow().precedence;
+                let precy = ry.borrow().precedence;
 
                 match (precx, precy) {
                     (Some(px), Some(py)) => {
@@ -1261,9 +1256,9 @@ impl Lemon {
                     Some(x) => {
                         let sp = ap.sp.upgrade();
                         let index = sp.borrow().index;
-                        if index < self.nterminal {
+                        if index < self.num_terminals {
                             n_tkn_act += 1;
-                        } else if index < self.nsymbol {
+                        } else if index < self.default_index {
                             n_nt_act += 1;
                         } else {
                             i_dflt = x;
@@ -1407,30 +1402,23 @@ impl Lemon {
         /*
         println!("----------------------------------------------------");
         println!("Symbols:");
-        for i in 0 .. self.nsymbol {
-            let sp = self.symbols[i].borrow();
+        for (i, sp) in self.symbols.iter().enumerate() {
+            let sp = sp.borrow();
             print!("  {:3}: {}", i, sp.name);
             if let NonTerminal{ref first_set, lambda, ..} = sp.typ {
                 print!(":");
                 if lambda {
                     print!(" <lambda>");
                 }
-                for j in 0 .. self.nterminal {
+                for j in 0 .. self.num_terminals {
                     if first_set.contains(&j) {
                         print!(" {}", self.symbols[j].borrow().name);
                     }
                 }
             }
             println!();
-        }*/
-    }
-
-    fn get_precedence(p: &Option<WeakSymbol>) -> Option<Precedence> {
-        p.as_ref().and_then(|y| {
-            let y = y.upgrade();
-            let y = y.borrow();
-            y.assoc
-        })
+        }
+        */
     }
 
     fn state_find(&mut self, bp: &ConfigList) -> Option<Rc<RefCell<State>>> {
@@ -1468,8 +1456,7 @@ impl Lemon {
                 let ref spt = sp.borrow().typ;
                 if let NonTerminal{ref rules, ..} = spt {
                     if rules.is_empty() {
-                        let is_err_sym = Rc::ptr_eq(&sp, &self.err_sym.upgrade());
-                        if !is_err_sym {
+                        if !sp.borrow().index == self.error_index {
                             return error_span(sp_span.1, "Nonterminal has no rules");
                         }
                     }
@@ -1537,18 +1524,18 @@ impl Lemon {
     }
 
     fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WeakSymbol {
-        Lemon::symbol_new(&mut self.symbols, name, typ)
+        self.symbol_new(name, typ)
     }
     fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WeakSymbol {
-        Lemon::symbol_new(&mut self.symbols, name.to_string().as_ref(), typ)
+        self.symbol_new(name.to_string().as_ref(), typ)
     }
     fn symbol_new_t_span(&mut self, name: &Ident, typ: NewSymbolType) -> WeakSymbolWithSpan {
         let sym = self.symbol_new_t(name, typ);
         WeakSymbolWithSpan(sym, name.span())
     }
-    fn symbol_new(symbols: &mut Vec<RcSymbol>, name: &str, typ: NewSymbolType) -> WeakSymbol {
+    fn symbol_new(&mut self, name: &str, typ: NewSymbolType) -> WeakSymbol {
         if !name.is_empty() {
-            for s in symbols.iter() {
+            for s in self.symbols.iter() {
                 let mut b = s.borrow_mut();
                 if b.name == name {
                     b.use_cnt += 1;
@@ -1570,14 +1557,14 @@ impl Lemon {
             index: 0,
             typ,
             fallback: None,
-            assoc: None,
+            precedence: None,
             use_cnt: 1,
             data_type: None,
             dt_num: 0,
         };
         let symbol = Rc::new(RefCell::new(symbol));
         let w = (&symbol).into();
-        symbols.push(symbol);
+        self.symbols.push(symbol);
         w
     }
     fn symbol_find(&self, name: &str) -> Option<RcSymbol> {
@@ -1619,9 +1606,9 @@ impl Lemon {
                 self.parse_fail = code;
             }
             Decl::Type(id, ty) => {
-                let nst = if is_uppercase(&id) {
+                let nst = if is_terminal_ident(&id) {
                     NewSymbolType::Terminal
-                } else if is_lowercase(&id) {
+                } else if is_nonterminal_ident(&id) {
                     NewSymbolType::NonTerminal
                 } else {
                     return error_span(id.span(), "Symbol must use only ASCII characters");
@@ -1636,14 +1623,14 @@ impl Lemon {
             Decl::Assoc(a, ids) => {
                 pdt.precedence += 1;
                 for token in ids {
-                    if !is_uppercase(&token) {
+                    if !is_terminal_ident(&token) {
                         return error_span(token.span(), "Precedence cannot be assigned to a non-terminal");
                     }
                     let sp = self.symbol_new_t(&token, NewSymbolType::Terminal).upgrade();
                     let mut b = sp.borrow_mut();
-                    match b.assoc {
+                    match b.precedence {
                         Some(_) => return error_span(token.span(), "Symbol has already been given a precedence"),
-                        None => b.assoc = Some(Precedence(pdt.precedence, a)),
+                        None => b.precedence = Some(Precedence(pdt.precedence, a)),
                     }
                 }
             }
@@ -1669,18 +1656,18 @@ impl Lemon {
                 if self.start.is_some() {
                     return error_span(id.span(), "Start symbol already defined");
                 }
-                if is_uppercase(&id) {
+                if !is_nonterminal_ident(&id) {
                     return error_span(id.span(), "Start symbol must be a non-terminal");
                 }
                 self.start = Some(self.symbol_new_t(&id, NewSymbolType::NonTerminal));
             }
             Decl::Fallback(fb, ids) => {
-                if !is_uppercase(&fb) {
+                if !is_terminal_ident(&fb) {
                     return error_span(fb.span(), "Fallback must be a token");
                 }
                 let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
                 for id in ids {
-                    if !is_uppercase(&fb) {
+                    if !is_terminal_ident(&fb) {
                         return error_span(fb.span(), "Fallback must be a token");
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal).upgrade();
@@ -1696,15 +1683,21 @@ impl Lemon {
                 if self.wildcard.is_some() {
                     return error_span(id.span(), "Wildcard already defined");
                 }
-                if !is_uppercase(&id) {
+                if !is_terminal_ident(&id) {
                     return error_span(id.span(), "Wildcard must be a token");
                 }
                 let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                 self.wildcard = Some(sp);
             }
             Decl::TokenClass(tk, ids) => {
+                if !is_terminal_ident(&tk) {
+                    return error_span(tk.span(), "token_class token must be a token");
+                }
                 let tk = self.symbol_new_t(&tk, NewSymbolType::MultiTerminal).upgrade();
                 for id in ids {
+                    if !is_terminal_ident(&id) {
+                        return error_span(id.span(), "token_class ids must be tokens");
+                    }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                     if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
                         sub_sym.push(sp.into());
@@ -1723,16 +1716,16 @@ impl Lemon {
             Decl::Rule{ lhs, rhs, action, prec } => {
                 //TODO use proper spans for each RHS
                 let lhs_span = lhs.span();
-                if !is_lowercase(&lhs) {
+                if !is_nonterminal_ident(&lhs) {
                     return error_span(lhs_span, "LHS of rule must be non-terminal");
                 }
                 let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, alias)| {
                     let tok = if toks.len() == 1 {
                         let tok = toks.into_iter().next().unwrap();
-                        let nst = if is_uppercase(&tok) {
+                        let nst = if is_terminal_ident(&tok) {
                             NewSymbolType::Terminal
-                        } else if is_lowercase(&tok) {
+                        } else if is_nonterminal_ident(&tok) {
                             NewSymbolType::NonTerminal
                         } else {
                             return error_span(tok.span(), "Invalid token in RHS of rule");
@@ -1743,7 +1736,7 @@ impl Lemon {
                         let mut ss = Vec::new();
                         let span = toks[0].span(); //TODO: extend span
                         for tok in toks {
-                            if !is_uppercase(&tok) {
+                            if !is_terminal_ident(&tok) {
                                 return error_span(tok.span(), "Cannot form a compound containing a non-terminal");
                             }
                             ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
@@ -1761,8 +1754,8 @@ impl Lemon {
 
                 let prec_sym = match prec {
                     Some(ref id) => {
-                        if !is_uppercase(id) {
-                            return error_span(id.span(), "The precedence symbol must be a terminal");
+                        if !is_terminal_ident(id) {
+                            return error_span(id.span(), "The precedence symbol must be a token");
                         }
                         Some(self.symbol_new_t(id, NewSymbolType::Terminal))
                     }
@@ -1777,6 +1770,7 @@ impl Lemon {
                     rhs,
                     code: action,
                     prec_sym,
+                    precedence: None,
                     index,
                     can_reduce: false,
                 };
@@ -1806,9 +1800,9 @@ impl Lemon {
         }
 
         /* Generate the defines */
-        let yycodetype = minimum_signed_type(self.nsymbol + 1);
+        let yycodetype = minimum_signed_type(self.symbols.len());
         let yyactiontype = minimum_unsigned_type(self.states.len() + self.rules.len() + 5);
-        let yynocode = (self.nsymbol + 1) as i32;
+        let yynocode = (self.symbols.len()) as i32;
         let yywildcard = if let Some(ref wildcard) = self.wildcard {
             let wildcard = wildcard.upgrade();
             let wildcard = wildcard.borrow();
@@ -1830,13 +1824,14 @@ impl Lemon {
          ** Print the definition of the union used for the parser's data stack.
          ** This union contains fields for every possible data type for tokens
          ** and nonterminals.  In the process of computing and printing this
-         ** union, also set the ".dtnum" field of every terminal and nonterminal
+         ** union, also set the ".dt_num" field of every terminal and nonterminal
          ** symbol.
          */
-        let mut types = HashMap::new();
+        //Maps the Type to the equivalent dt_num
+        let mut types = HashMap::<Type, usize>::new();
 
         for sp in &self.symbols {
-            if Rc::ptr_eq(&sp, &self.err_sym.upgrade()) {
+            if sp.borrow().index == self.error_index {
                 continue;
             }
 
@@ -1891,7 +1886,6 @@ impl Lemon {
         let yysyntaxerror = &self.syntax_error;
         let yyparsefail = &self.parse_fail;
 
-        /* Print out the definition of YYTOKENTYPE and YYMINORTYPE */
         let minor_types = types.iter().map(|(k, v)| {
             let ident = Ident::new(&format!("YY{}", v), Span::call_site());
             quote!(#ident(#k))
@@ -1907,18 +1901,14 @@ impl Lemon {
         ));
 
 
-        let yynstate = self.states.len() as i32;
-        let yynrule = self.rules.len() as i32;
-        let err_sym = self.err_sym.upgrade();
-        let mut err_sym = err_sym.borrow_mut();
-        err_sym.dt_num = types.len() + 1;
-
-        let yyerrorsymbol = if err_sym.use_cnt > 0 {
-            err_sym.index as i32
+        let yynstate = Literal::usize_unsuffixed(self.states.len());
+        let yynrule = Literal::usize_unsuffixed(self.rules.len());
+        let yyerrorsymbol = if self.symbols[self.error_index].borrow_mut().use_cnt > 0 {
+            self.error_index
         } else {
             0
         };
-        drop(err_sym);
+        let yyerrorsymbol = Literal::usize_unsuffixed(yyerrorsymbol);
 
         src.extend(quote!(
             const YYNSTATE: i32 = #yynstate;
@@ -1977,7 +1967,7 @@ impl Lemon {
                     let ap = ap.borrow();
                     let sp = ap.sp.upgrade();
                     let sp = sp.borrow();
-                    if sp.index >= self.nterminal { continue }
+                    if sp.index >= self.num_terminals { continue }
                     match self.compute_action(&ap) {
                         None => continue,
                         Some(action) => actset.add_action(sp.index, action),
@@ -1993,8 +1983,9 @@ impl Lemon {
                     let ap = ap.borrow();
                     let sp = ap.sp.upgrade();
                     let sp = sp.borrow();
-                    if sp.index < self.nterminal { continue }
-                    if sp.index == self.nsymbol { continue }
+                    if sp.index < self.num_terminals { continue }
+                    if sp.index == self.default_index { continue }
+                    //sp is a non-default NonTerminal
                     match self.compute_action(&ap) {
                         None => continue,
                         Some(action) => actset.add_action(sp.index, action),
@@ -2011,7 +2002,7 @@ impl Lemon {
         let yytoken_span = yytoken.brace_token.span;
 
         let mut token_matches = Vec::new();
-        for i in 1 .. self.nterminal {
+        for i in 1 .. self.num_terminals {
             let ref s = self.symbols[i];
             let i = i as i32;
             let s = s.borrow();
@@ -2059,8 +2050,8 @@ impl Lemon {
         /* Output the yy_lookahead table */
         let yy_lookahead = acttab.a_action.iter().map(|ac| {
                 let a = match ac {
-                    None => self.nsymbol,
-                    Some(a) => a.lookahead ,
+                    None => self.default_index,
+                    Some(a) => a.lookahead,
                 };
                 let a = Literal::usize_unsuffixed(a);
                 quote!(#a)
@@ -2488,7 +2479,6 @@ impl Lemon {
         let lhs = rp.lhs.upgrade();
         let lhs = lhs.borrow();
         let mut code = TokenStream::new();
-        let err_sym = self.err_sym.upgrade();
 
         for i in (0..rp.rhs.len()).rev() {
             let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
@@ -2504,7 +2494,7 @@ impl Lemon {
             let r_ = r.0.upgrade();
             let ref alias = r.1;
             let r = r_.borrow();
-            if !Rc::ptr_eq(&r_, &err_sym) {
+            if r.index != self.error_index {
                 let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
                 yymatch.push(quote!(#yypi.minor));
             }
@@ -2526,7 +2516,7 @@ impl Lemon {
             let r_ = r.0.upgrade();
             let ref alias = r.1;
             let r = r_.borrow();
-            if Rc::ptr_eq(&r_, &err_sym) {
+            if r.index == self.error_index {
                 continue;
             }
             let yydt = Ident::new(&format!("YY{}", r.dt_num), Span::call_site());
