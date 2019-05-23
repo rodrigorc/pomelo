@@ -589,6 +589,10 @@ impl Lemon {
 
         lem.symbol_new("{default}", NewSymbolType::NonTerminal);
 
+        if lem.rules.is_empty() {
+            return error("Grammar must have some rules"); //tested
+        }
+
         Ok(lem)
     }
     pub fn module_name(&self) -> &Ident {
@@ -788,16 +792,7 @@ impl Lemon {
                 let span = &r.1;
                 let r = r.upgrade();
                 if Rc::ptr_eq(&sp, &r) {
-                    return error_span(*span, "start symbol on the RHS of a rule");
-                }
-                let r = r.borrow();
-                if let MultiTerminal(ref sub_sym) = r.typ {
-                    for r2 in sub_sym {
-                        let r2 = r2.upgrade();
-                        if Rc::ptr_eq(&sp, &r2) {
-                            return error_span(*span, "start symbol on the RHS of a rule");
-                        }
-                    }
+                    return error_span(*span, "start symbol on the RHS of a rule"); //tested
                 }
             }
         }
@@ -1070,7 +1065,7 @@ impl Lemon {
         for rp in &self.rules {
             let rp = rp.borrow();
             if !rp.can_reduce {
-                return error_span(rp.span, "This rule cannot be reduced");
+                return error_span(rp.span, "This rule cannot be reduced"); //tested
             }
         }
         Ok(())
@@ -1460,8 +1455,8 @@ impl Lemon {
                 let spt = &sp.borrow().typ;
                 if let NonTerminal{ref rules, ..} = spt {
                     if rules.is_empty() {
-                        if !sp.borrow().index == self.error_index {
-                            return error_span(sp_span.1, "Nonterminal has no rules");
+                        if sp.borrow().index != self.error_index {
+                            return error_span(sp_span.1, "Nonterminal has no rules"); //tested
                         }
                     }
                     for newrp in rules {
@@ -1543,6 +1538,14 @@ impl Lemon {
                 let mut b = s.borrow_mut();
                 if b.name == name {
                     b.use_cnt += 1;
+                    //If asked for a MultiTerminal, but it is a Terminal, convert it
+                    if let NewSymbolType::MultiTerminal = typ {
+                        match b.typ {
+                            MultiTerminal{..} => (),
+                            Terminal => { b.typ = MultiTerminal(Vec::new()); }
+                            _ => unreachable!(),
+                        }
+                    }
                     return s.into();
                 }
             }
@@ -1615,12 +1618,12 @@ impl Lemon {
                 } else if is_nonterminal_ident(&id) {
                     NewSymbolType::NonTerminal
                 } else {
-                    return error_span(id.span(), "Symbol must use only ASCII characters");
+                    return error_span(id.span(), "Symbol must start with uppercase or lowercase letter"); //tested
                 };
                 let sp = self.symbol_new_t(&id, nst).upgrade();
                 let mut sp = sp.borrow_mut();
                 if sp.data_type.is_some() {
-                    return error_span(id.span(), "Symbol type already defined");
+                    return error_span(id.span(), "Symbol type already defined"); //tested
                 }
                 sp.data_type = Some(ty);
             }
@@ -1628,56 +1631,56 @@ impl Lemon {
                 pdt.precedence += 1;
                 for token in ids {
                     if !is_terminal_ident(&token) {
-                        return error_span(token.span(), "Precedence cannot be assigned to a non-terminal");
+                        return error_span(token.span(), "Precedence cannot be assigned to a non-terminal"); //tested
                     }
                     let sp = self.symbol_new_t(&token, NewSymbolType::Terminal).upgrade();
                     let mut b = sp.borrow_mut();
                     match b.precedence {
-                        Some(_) => return error_span(token.span(), "Symbol has already been given a precedence"),
+                        Some(_) => return error_span(token.span(), "Symbol has already been given a precedence"), //tested
                         None => b.precedence = Some(Precedence(pdt.precedence, a)),
                     }
                 }
             }
             Decl::DefaultType(ty) => {
                 if self.var_type.is_some() {
-                    return error_span(ty.span(), "Default type already defined");
+                    return error_span(ty.span(), "Default type already defined"); //tested
                 }
                 self.var_type = Some(ty);
             }
             Decl::ExtraArgument(ty) => {
                 if self.arg.is_some() {
-                    return error_span(ty.span(), "Extra argument type already defined");
+                    return error_span(ty.span(), "Extra argument type already defined"); //tested
                 }
                 self.arg = Some(ty);
             }
             Decl::Error(ty) => {
                 if self.err_type.is_some() {
-                    return error_span(ty.span(), "Error type already defined");
+                    return error_span(ty.span(), "Error type already defined"); //tested
                 }
                 self.err_type = Some(ty);
             }
             Decl::StartSymbol(id) => {
                 if self.start.is_some() {
-                    return error_span(id.span(), "Start symbol already defined");
+                    return error_span(id.span(), "Start symbol already defined"); //tested
                 }
                 if !is_nonterminal_ident(&id) {
-                    return error_span(id.span(), "Start symbol must be a non-terminal");
+                    return error_span(id.span(), "Start symbol must be a non-terminal"); //tested
                 }
                 self.start = Some(self.symbol_new_t(&id, NewSymbolType::NonTerminal));
             }
             Decl::Fallback(fb, ids) => {
                 if !is_terminal_ident(&fb) {
-                    return error_span(fb.span(), "Fallback must be a token");
+                    return error_span(fb.span(), "Fallback must be a token"); //tested
                 }
                 let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
                 for id in ids {
-                    if !is_terminal_ident(&fb) {
-                        return error_span(fb.span(), "Fallback must be a token");
+                    if !is_terminal_ident(&id) {
+                        return error_span(id.span(), "Fallback ids must be tokens"); //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal).upgrade();
                     let mut b = sp.borrow_mut();
                     if b.fallback.is_some() {
-                        return error_span(id.span(), "More than one fallback assigned to token");
+                        return error_span(id.span(), "More than one fallback assigned to token"); //tested
                     }
                     b.fallback = Some(fallback.clone());
                     self.has_fallback = true;
@@ -1685,22 +1688,22 @@ impl Lemon {
             }
             Decl::Wildcard(id) => {
                 if self.wildcard.is_some() {
-                    return error_span(id.span(), "Wildcard already defined");
+                    return error_span(id.span(), "Wildcard already defined"); //tested
                 }
                 if !is_terminal_ident(&id) {
-                    return error_span(id.span(), "Wildcard must be a token");
+                    return error_span(id.span(), "Wildcard must be a token"); //tested
                 }
                 let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                 self.wildcard = Some(sp);
             }
             Decl::TokenClass(tk, ids) => {
                 if !is_terminal_ident(&tk) {
-                    return error_span(tk.span(), "token_class token must be a token");
+                    return error_span(tk.span(), "token_class must be a token"); //tested
                 }
                 let tk = self.symbol_new_t(&tk, NewSymbolType::MultiTerminal).upgrade();
                 for id in ids {
                     if !is_terminal_ident(&id) {
-                        return error_span(id.span(), "token_class ids must be tokens");
+                        return error_span(id.span(), "token_class ids must be tokens"); //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                     if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
@@ -1712,7 +1715,7 @@ impl Lemon {
             }
             Decl::Token(e) => {
                 if self.token_enum.is_some() {
-                    return error_span(e.span(), "%token redeclared");
+                    return error_span(e.span(), "token enum already defined"); //tested
                 }
                 self.token_enum = Some(e);
                 //TODO
@@ -1721,7 +1724,7 @@ impl Lemon {
                 //TODO use proper spans for each RHS
                 let lhs_span = lhs.span();
                 if !is_nonterminal_ident(&lhs) {
-                    return error_span(lhs_span, "LHS of rule must be non-terminal");
+                    return error_span(lhs_span, "LHS of rule must be non-terminal"); //tested
                 }
                 let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, alias)| {
@@ -1732,7 +1735,7 @@ impl Lemon {
                         } else if is_nonterminal_ident(&tok) {
                             NewSymbolType::NonTerminal
                         } else {
-                            return error_span(tok.span(), "Invalid token in RHS of rule");
+                            return error_span(tok.span(), "Symbol must start with uppercase or lowercase letter"); //tested
                         };
                         self.symbol_new_t_span(&tok, nst)
                     } else {
@@ -1741,7 +1744,7 @@ impl Lemon {
                         let span = toks[0].span(); //TODO: extend span
                         for tok in toks {
                             if !is_terminal_ident(&tok) {
-                                return error_span(tok.span(), "Cannot form a compound containing a non-terminal");
+                                return error_span(tok.span(), "Cannot form a compound containing a non-terminal"); //tested
                             }
                             ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                         }
@@ -1759,7 +1762,7 @@ impl Lemon {
                 let prec_sym = match prec {
                     Some(ref id) => {
                         if !is_terminal_ident(id) {
-                            return error_span(id.span(), "The precedence symbol must be a token");
+                            return error_span(id.span(), "The precedence symbol must be a token"); //tested
                         }
                         Some(self.symbol_new_t(id, NewSymbolType::Terminal))
                     }
@@ -1810,8 +1813,8 @@ impl Lemon {
         let yywildcard = if let Some(ref wildcard) = self.wildcard {
             let wildcard = wildcard.upgrade();
             let wildcard = wildcard.borrow();
-            if wildcard.data_type.is_some() {
-                return error("Wildcard token must not have a type");
+            if let Some(ref dt) = wildcard.data_type {
+                return error_span(dt.span(), "Wildcard token must not have a type"); //tested
             }
             wildcard.index
         } else {
@@ -1882,7 +1885,7 @@ impl Lemon {
         };
 
         if !yytoken.variants.is_empty() {
-            return error_span(yytoken.variants.span(), "Token enum declaration must be empty");
+            return error_span(yytoken.variants.span(), "Token enum declaration must be empty"); //tested
         }
 
         let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
@@ -2125,7 +2128,7 @@ impl Lemon {
                             (0, _) => {}
                             (fdt, pdt) if fdt == pdt => {}
                             _ => {
-                                return error("Fallback token must have the same type or no type at all");
+                                return error_span(fb.data_type.span(), "Fallback token must have the same type or no type at all"); //tested
                             }
                         }
                         Ok(fb.index as i32)
@@ -2498,7 +2501,6 @@ impl Lemon {
 
         let mut yymatch = Vec::new();
         for (i, r) in rp.rhs.iter().enumerate() {
-            let span = &(r.0).1;
             let r_ = r.0.upgrade();
             let alias = &r.1;
             let r = r_.borrow();
@@ -2507,11 +2509,11 @@ impl Lemon {
                 yymatch.push(quote!(#yypi.minor));
             }
             match (alias, &r.typ) {
-                (Some(_), MultiTerminal(ref ss)) => {
+                (Some(ref alias), MultiTerminal(ref ss)) => {
                     for or in &ss[1..] {
                         let or = or.upgrade();
                         if r.dt_num != or.borrow().dt_num {
-                            return error_span(*span, "Compound tokens must have all the same type");
+                            return error_span(alias.span(), "Compound tokens with an alias must all have the same type"); //tested
                         }
                     }
                 }
@@ -2532,7 +2534,7 @@ impl Lemon {
                 Some(ref alias) => {
                     if let Some(ref wildcard) = self.wildcard {
                         if Rc::ptr_eq(&r_, &wildcard.upgrade()) {
-                            return error_span(alias.span(), "Wildcard token must not have an alias");
+                            return error_span(alias.span(), "Wildcard token must not have an alias"); //tested
                         }
                     }
                     yypattern.push(quote!(YYMinorType::#yydt(#alias)))

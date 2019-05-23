@@ -8,7 +8,7 @@ pomelo! {
 
     start ::=
         One|Two|Three(A)
-     //~^ ERROR Compound tokens must have all the same type
+                   //~^ ERROR Compound tokens with an alias must all have the same type
         { }
 }
 
@@ -20,6 +20,14 @@ pomelo! {
 
     start ::=
         Number(A)
-     //~^ ERROR Compound tokens must have all the same type
+            //~^ ERROR Compound tokens with an alias must all have the same type
         { }
+}
+
+pomelo! {
+    %module three;
+    %type Number i32; //TODO: it should fail, currently is ignored
+    %token_class Number One Two;
+
+    start ::=;
 }
