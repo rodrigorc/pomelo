@@ -98,20 +98,6 @@ impl Symbol {
     }
 }
 
-//Do not use Ord, because that requires Eq, that we do not need
-fn symbol_cmp(a: &RcSymbol, b: &RcSymbol) -> Ordering {
-    fn symbol_ord(s: &SymbolType) -> i32 {
-        match s {
-            Terminal => 0,
-            NonTerminal{..} => 1,
-            MultiTerminal(_) => 2,
-        }
-    }
-    let a = symbol_ord(&a.borrow().typ);
-    let b = symbol_ord(&b.borrow().typ);
-    a.cmp(&b)
-}
-
 /* A configuration is a production rule of the grammar together with
 * a mark (dot) showing how much of that rule has been processed so far.
 * Configurations also contain a follow-set which is a list of terminal
@@ -128,8 +114,8 @@ struct Config {
     rule: WRc<RefCell<Rule>>,   //The rule upon which the configuration is based
     dot: usize,           //The parse point
     fws: RuleSet,       //Follow-set for this configuration only
-    fplp: Vec<WRc<RefCell<Config>>>,  //Follow-set forward propagation links
-    bplp: Vec<WRc<RefCell<Config>>>,  //Follow-set backwards propagation links
+    fplp: WeakConfigList,  //Follow-set forward propagation links
+    bplp: WeakConfigList,  //Follow-set backwards propagation links
     status: CfgStatus,  //Used during followset and shift computations
 }
 
@@ -154,9 +140,10 @@ fn config_cmp(a: &Rc<RefCell<Config>>, b: &Rc<RefCell<Config>>) -> Ordering {
 }
 
 type ConfigList = Vec<Rc<RefCell<Config>>>;
+type WeakConfigList = Vec<WRc<RefCell<Config>>>;
 
 #[derive(Debug)]
-enum EAction {
+enum ActionDetail {
     Shift(WRc<RefCell<State>>),
     Accept,
     Reduce(WRc<RefCell<Rule>>),
@@ -169,37 +156,38 @@ enum EAction {
     NotUsed                             //Deleted by compression
 }
 
-fn eaction_cmp(a: &EAction, b: &EAction) -> Ordering {
-    use EAction::*;
-
-    match a {
-        Shift(ref sa) => match b {
-            Shift(ref sb) => {
-                let sa = sa.upgrade();
-                let sb = sb.upgrade();
-                let rc = sa.borrow().state_num.cmp(&sb.borrow().state_num);
-                rc
+impl ActionDetail {
+    fn cmp(a: &ActionDetail, b: &ActionDetail) -> Ordering {
+        use ActionDetail::*;
+        match a {
+            Shift(ref sa) => match b {
+                Shift(ref sb) => {
+                    let sa = sa.upgrade();
+                    let sb = sb.upgrade();
+                    let rc = sa.borrow().state_num.cmp(&sb.borrow().state_num);
+                    rc
+                }
+                _ => Ordering::Less,
             }
-            _ => Ordering::Less,
-        }
-        Accept => match b {
-            Shift(_) => Ordering::Greater,
-            Accept => Ordering::Equal,
-            _ => Ordering::Less,
-        }
-        Reduce(ref ra) => match b {
-            Shift(_) => Ordering::Greater,
-            Accept => Ordering::Greater,
-            Reduce(ref rb) => {
-                let ra = ra.upgrade();
-                let rb = rb.upgrade();
-                let rc = ra.borrow().index.cmp(&rb.borrow().index);
-                rc
+            Accept => match b {
+                Shift(_) => Ordering::Greater,
+                Accept => Ordering::Equal,
+                _ => Ordering::Less,
             }
-            _ => Ordering::Less,
-        }
-        _ => {
-            Ordering::Equal
+            Reduce(ref ra) => match b {
+                Shift(_) => Ordering::Greater,
+                Accept => Ordering::Greater,
+                Reduce(ref rb) => {
+                    let ra = ra.upgrade();
+                    let rb = rb.upgrade();
+                    let rc = ra.borrow().index.cmp(&rb.borrow().index);
+                    rc
+                }
+                _ => Ordering::Less,
+            }
+            _ => {
+                Ordering::Equal
+            }
         }
     }
 }
@@ -207,16 +195,16 @@ fn eaction_cmp(a: &EAction, b: &EAction) -> Ordering {
 //Every shift or reduce operation is stored as one of the following
 #[derive(Debug)]
 struct Action {
-  sp: WeakSymbol,           //The look-ahead symbol
-  x: EAction,
+  look_ahead: WeakSymbol,           //The look-ahead symbol
+  detail: ActionDetail,
 }
 
 fn action_cmp(a: &RefCell<Action>, b: &RefCell<Action>) -> Ordering {
-    let asp = a.borrow().sp.upgrade();
-    let bsp = b.borrow().sp.upgrade();
+    let asp = a.borrow().look_ahead.upgrade();
+    let bsp = b.borrow().look_ahead.upgrade();
     let rc = asp.borrow().index.cmp(&bsp.borrow().index);
     match rc {
-        Ordering::Equal => match eaction_cmp(&a.borrow().x, &b.borrow().x) {
+        Ordering::Equal => match ActionDetail::cmp(&a.borrow().detail, &b.borrow().detail) {
             Ordering::Equal => {
                 (&*a.borrow() as *const Action).cmp(&(&*b.borrow() as *const Action))
             }
@@ -228,10 +216,10 @@ fn action_cmp(a: &RefCell<Action>, b: &RefCell<Action>) -> Ordering {
 
 #[derive(Debug)]
 struct State {
-    cfp: Vec<Rc<RefCell<Config>>>, //All configurations in this set
-    bp: Vec<WRc<RefCell<Config>>>, //The basis configuration for this state
+    configs: ConfigList, //All configurations in this set
+    basis: WeakConfigList, //The basis configuration for this state
     state_num: usize,     //Sequential number for this state
-    ap: Vec<RefCell<Action>>,    //Array of actions for this state
+    actions: Vec<RefCell<Action>>,    //Array of actions for this state
     n_tkn_act: i32,     //number of actions on terminals and non-terminals
     n_nt_act: i32,
     i_tkn_ofst: Option<i32>,    //yy_action[] offset for terminals and non-terminals
@@ -297,7 +285,7 @@ impl fmt::Display for Config {
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "STA {}", self.state_num)?;
-        for c in &self.cfp {
+        for c in &self.configs {
             let c = c.borrow();
             write!(f, "{}", c)?;
         }
@@ -633,7 +621,19 @@ impl Lemon {
         //First there are all the Terminals, the first one is $
         //Then the NonTerminals, the last one is {default}
         //And finally the MultiTerminals
-        self.symbols.sort_by(symbol_cmp);
+        //Do not impl Ord, because that requires Eq, that we do not need
+        self.symbols.sort_by(|a, b| {
+            fn symbol_ord(s: &SymbolType) -> i32 {
+                match s {
+                    Terminal => 0,
+                    NonTerminal{..} => 1,
+                    MultiTerminal(_) => 2,
+                }
+            }
+            let a = symbol_ord(&a.borrow().typ);
+            let b = symbol_ord(&b.borrow().typ);
+            a.cmp(&b)
+        });
 
         let mut last_terminal = 0;
         let mut default_index = 0;
@@ -647,8 +647,10 @@ impl Lemon {
         }
         self.num_terminals = last_terminal + 1;
         self.default_index = default_index;
-        self.error_index = self.num_terminals; //error symbol is the first NonTerminal, so it happens to be just here
+        //error symbol is the first NonTerminal, so it happens to be just here
+        self.error_index = self.num_terminals;
 
+        //Default start symbol is the LHS of the first rule
         if self.start.is_none() {
             self.start = Some(self.rules.first().unwrap().borrow().lhs.0.clone());
         }
@@ -831,7 +833,7 @@ impl Lemon {
                  ** propagation links from the state under construction into the
                  ** preexisting state, then return a pointer to the preexisting state */
                 let bstp = stp.borrow();
-                for (x, y) in bp.into_iter().zip(&bstp.bp) {
+                for (x, y) in bp.into_iter().zip(&bstp.basis) {
                     let y = y.upgrade();
                     let mut y = y.borrow_mut();
                     y.bplp.extend(x.borrow_mut().bplp.iter().map(|x| x.clone()));
@@ -840,13 +842,13 @@ impl Lemon {
             }
             None => {
                 /* This really is a new state. Construct all the details */
-                let mut cfp = self.configlist_closure(cur)?;
-                cfp.sort_by(config_cmp);
+                let mut configs = self.configlist_closure(cur)?;
+                configs.sort_by(config_cmp);
                 let stp = Rc::new(RefCell::new(State {
-                    cfp: cfp,
-                    bp: bp.iter().map(WRc::from).collect(),
+                    configs,
+                    basis: bp.iter().map(WRc::from).collect(),
                     state_num: self.states.len(),
-                    ap: Vec::new(),
+                    actions: Vec::new(),
                     n_tkn_act: 0,
                     n_nt_act: 0,
                     i_tkn_ofst: None,
@@ -866,12 +868,12 @@ impl Lemon {
         /* Each configuration becomes complete after it contibutes to a successor
          ** state.  Initially, all configurations are incomplete */
 
-        for cfp in &state.borrow().cfp {
+        for cfp in &state.borrow().configs {
             cfp.borrow_mut().status = CfgStatus::Incomplete;
         }
         let mut aps = Vec::new();
         /* Loop through all configurations of the state "stp" */
-        for (icfp, cfp) in state.borrow().cfp.iter().enumerate() {
+        for (icfp, cfp) in state.borrow().configs.iter().enumerate() {
             let cfp = cfp.borrow();
             if let CfgStatus::Complete = cfp.status { continue }/* Already used by inner loop */
             let rule = cfp.rule.upgrade();
@@ -884,7 +886,7 @@ impl Lemon {
             /* For every configuration in the state "stp" which has the symbol "sp"
              ** following its dot, add the same configuration to the basis set under
              ** construction but with the dot shifted one symbol to the right. */
-            for bcfp_ in &state.borrow().cfp[icfp..] {
+            for bcfp_ in &state.borrow().configs[icfp..] {
                 let bcfp = bcfp_.borrow();
                 if let CfgStatus::Complete = bcfp.status { continue }   /* Already used */
                 let brule = bcfp.rule.upgrade();
@@ -909,23 +911,23 @@ impl Lemon {
             match bsp.typ {
                 MultiTerminal(ref sub_sym) => {
                     for ss in sub_sym {
-                        let x = EAction::Shift((&newstp).into());
+                        let detail = ActionDetail::Shift((&newstp).into());
                         aps.push(RefCell::new(Action {
-                            sp: ss.clone(),
-                            x
+                            look_ahead: ss.clone(),
+                            detail
                         }));
                     }
                 }
                 _ => {
-                    let x = EAction::Shift((&newstp).into());
+                    let detail = ActionDetail::Shift((&newstp).into());
                     aps.push(RefCell::new(Action {
-                        sp: (&sp).into(),
-                        x
+                        look_ahead: (&sp).into(),
+                        detail
                     }));
                 }
             }
         }
-        state.borrow_mut().ap.extend(aps);
+        state.borrow_mut().actions.extend(aps);
 
         Ok(())
     }
@@ -944,7 +946,7 @@ impl Lemon {
         /* Convert all backlinks into forward links.  Only the forward
          ** links are used in the follow-set computation. */
         for stp in &self.states {
-            for cfp in &stp.borrow().cfp {
+            for cfp in &stp.borrow().configs {
                 for plp in &cfp.borrow().bplp {
                     let plp = plp.upgrade();
                     plp.borrow_mut().fplp.push(cfp.into());
@@ -960,7 +962,7 @@ impl Lemon {
      */
     fn find_follow_sets(&mut self) {
         for stp in &self.states {
-            for cfp in &stp.borrow().cfp {
+            for cfp in &stp.borrow().configs {
                 cfp.borrow_mut().status = CfgStatus::Incomplete;
             }
         }
@@ -969,7 +971,7 @@ impl Lemon {
         while progress {
             progress = false;
             for stp in &self.states {
-                for cfp in &stp.borrow().cfp {
+                for cfp in &stp.borrow().configs {
                     let (fws, fplp) = {
                         let cfp = cfp.borrow();
                         if let CfgStatus::Complete = cfp.status {
@@ -1003,7 +1005,7 @@ impl Lemon {
         for stp in &self.states {
             let mut aps = Vec::new();
             let mut stp = stp.borrow_mut();
-            for cfp in &stp.cfp {
+            for cfp in &stp.configs {
                 let cfp = cfp.borrow_mut();
                 let rule = cfp.rule.upgrade();
                 if cfp.dot == rule.borrow().rhs.len() { /* Is dot at extreme right? */
@@ -1011,16 +1013,16 @@ impl Lemon {
                         if cfp.fws.contains(&j) {
                             /* Add a reduce action to the state "stp" which will reduce by the
                              ** rule "cfp->rp" if the lookahead symbol is "lemp->symbols[j]" */
-                            let x = EAction::Reduce((&rule).into());
+                            let detail = ActionDetail::Reduce((&rule).into());
                             aps.push(RefCell::new(Action {
-                                sp: (&self.symbols[j]).into(),
-                                x
+                                look_ahead: (&self.symbols[j]).into(),
+                                detail
                             }));
                         }
                     }
                 }
             }
-            stp.ap.extend(aps);
+            stp.actions.extend(aps);
         }
 
         /* Add the accepting token */
@@ -1029,21 +1031,21 @@ impl Lemon {
         /* Add to the first state (which is always the starting state of the
          ** finite state machine) an action to ACCEPT if the lookahead is the
          ** start nonterminal.  */
-        self.states.first().unwrap().borrow_mut().ap.push(RefCell::new(Action {
-            sp: sp,
-            x: EAction::Accept,
+        self.states.first().unwrap().borrow_mut().actions.push(RefCell::new(Action {
+            look_ahead: sp,
+            detail: ActionDetail::Accept,
         }));
 
         /* Resolve conflicts */
         for stp in &self.states {
-            stp.borrow_mut().ap.sort_by(action_cmp);
+            stp.borrow_mut().actions.sort_by(action_cmp);
             let stp = stp.borrow();
-            let len = stp.ap.len();
+            let len = stp.actions.len();
             for i in 0 .. len {
-                let ref ap = stp.ap[i];
+                let ap = &stp.actions[i];
                 for j in i + 1 .. len {
-                    let ref nap = stp.ap[j];
-                    if Rc::ptr_eq(&ap.borrow().sp.upgrade(), &nap.borrow().sp.upgrade()) {
+                    let nap = &stp.actions[j];
+                    if Rc::ptr_eq(&ap.borrow().look_ahead.upgrade(), &nap.borrow().look_ahead.upgrade()) {
                         /* The two actions "ap" and "nap" have the same lookahead.
                          ** Figure out which one should be used */
                         self.nconflict += if Lemon::resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut()) { 1 } else { 0 };
@@ -1057,9 +1059,9 @@ impl Lemon {
 
         /* Report an error for each rule that can never be reduced. */
         for stp in &self.states {
-            for a in &stp.borrow().ap {
+            for a in &stp.borrow().actions {
                 let a = a.borrow();
-                if let EAction::Reduce(ref x) = a.x {
+                if let ActionDetail::Reduce(ref x) = a.detail {
                     let x = x.upgrade();
                     x.borrow_mut().can_reduce = true;
                 }
@@ -1088,14 +1090,14 @@ impl Lemon {
      ** function won't work if apx->type==REDUCE and apy->type==SHIFT.
      */
     fn resolve_conflict(apx: &mut Action, apy: &mut Action) -> bool {
-        use EAction::*;
-        let (err, ax, ay) = match (&mut apx.x, &mut apy.x) {
+        use ActionDetail::*;
+        let (err, ax, ay) = match (&mut apx.detail, &mut apy.detail) {
             (Shift(x), Shift(y)) => {
                 (true, Shift(x.clone()), SSConflict(y.clone()))
             }
             /* Use operator associativity to break tie */
             (Shift(x), Reduce(y)) => {
-                let spx = apx.sp.upgrade();
+                let spx = apx.look_ahead.upgrade();
                 let ry = y.upgrade();
                 let precx = spx.borrow().precedence;
                 let precy = ry.borrow().precedence;
@@ -1133,8 +1135,8 @@ impl Lemon {
              ** the parser conflict had already been resolved. */
             _ => return false,
         };
-        apx.x = ax;
-        apy.x = ay;
+        apx.detail = ax;
+        apy.detail = ay;
         err
     }
 
@@ -1146,6 +1148,8 @@ impl Lemon {
      ** is a possible look-ahead.
      */
     fn compress_tables(&mut self) {
+        use ActionDetail::*;
+
         let def_symbol = self.symbol_find("{default}").unwrap();
 
         for stp in &self.states {
@@ -1154,27 +1158,27 @@ impl Lemon {
                 let mut rbest = None;
                 let mut uses_wildcard = false;
                 let stp = stp.borrow();
-                for (iap, ap) in stp.ap.iter().enumerate() {
+                for (iap, ap) in stp.actions.iter().enumerate() {
                     let ap = ap.borrow();
-                    match (&ap.x, &self.wildcard) {
-                        (EAction::Shift(_), Some(w)) => {
-                            let sp = ap.sp.upgrade();
+                    match (&ap.detail, &self.wildcard) {
+                        (Shift(_), Some(w)) => {
+                            let sp = ap.look_ahead.upgrade();
                             let w = w.upgrade();
                             if Rc::ptr_eq(&sp, &w) {
                                 uses_wildcard = true;
                             }
                         }
-                        (EAction::Reduce(ref rp), _) => {
+                        (Reduce(ref rp), _) => {
                             let rp = rp.upgrade();
                             if rp.borrow().lhs_start { continue }
                             if let Some(ref rbest) = rbest {
                                 if Rc::ptr_eq(&rp, &rbest) { continue }
                             }
                             let mut n = 1;
-                            for ap2 in &stp.ap[iap + 1..] {
+                            for ap2 in &stp.actions[iap + 1..] {
                                 let ap2 = ap2.borrow();
-                                match &ap2.x {
-                                    EAction::Reduce(ref rp2) => {
+                                match &ap2.detail {
+                                    Reduce(ref rp2) => {
                                         let rp2 = rp2.upgrade();
                                         if let Some(ref rbest) = rbest {
                                             if Rc::ptr_eq(&rp2, &rbest) { continue }
@@ -1205,10 +1209,10 @@ impl Lemon {
                 /* Combine matching REDUCE actions into a single default */
 
                 let mut apbest = None;
-                for (iap, ap) in stp.ap.iter().enumerate() {
+                for (iap, ap) in stp.actions.iter().enumerate() {
                     let bap = ap.borrow();
-                    match &bap.x {
-                        EAction::Reduce(ref rp) => {
+                    match &bap.detail {
+                        Reduce(ref rp) => {
                             let rp = rp.upgrade();
                             if Rc::ptr_eq(&rp, &rbest) {
                                 apbest = Some((iap, ap));
@@ -1219,23 +1223,23 @@ impl Lemon {
                     }
                 }
                 if let Some((iap, ap)) = apbest {
-                    ap.borrow_mut().sp = (&def_symbol).into();
-                    for ap2 in &stp.ap[iap + 1..] {
+                    ap.borrow_mut().look_ahead = (&def_symbol).into();
+                    for ap2 in &stp.actions[iap + 1..] {
                         let mut ap2 = ap2.borrow_mut();
-                        let unuse = match &ap2.x {
-                            EAction::Reduce(ref rp) => {
+                        let unuse = match &ap2.detail {
+                            Reduce(ref rp) => {
                                 let rp = rp.upgrade();
                                 Rc::ptr_eq(&rp, &rbest)
                             }
                             _ => false
                         };
                         if unuse {
-                            ap2.x = EAction::NotUsed;
+                            ap2.detail = NotUsed;
                         }
                     }
                 }
             }
-            stp.borrow_mut().ap.sort_by(action_cmp);
+            stp.borrow_mut().actions.sort_by(action_cmp);
         }
     }
 
@@ -1250,11 +1254,11 @@ impl Lemon {
             let mut n_nt_act = 0;
             let mut i_dflt = self.states.len() + self.rules.len();
 
-            for ap in &stp.borrow().ap {
+            for ap in &stp.borrow().actions {
                 let ap = ap.borrow();
                 match self.compute_action(&ap) {
                     Some(x) => {
-                        let sp = ap.sp.upgrade();
+                        let sp = ap.look_ahead.upgrade();
                         let index = sp.borrow().index;
                         if index < self.num_terminals {
                             n_tkn_act += 1;
@@ -1284,8 +1288,8 @@ impl Lemon {
      ** Return None if no action should be generated.
      */
     fn compute_action(&self, ap: &Action) -> Option<usize> {
-        use EAction::*;
-        let act = match &ap.x {
+        use ActionDetail::*;
+        let act = match &ap.detail {
             Shift(ref stp) => {
                 let stp = stp.upgrade();
                 let n = stp.borrow().state_num;
@@ -1308,7 +1312,7 @@ impl Lemon {
             let stp = stp.borrow();
             let mut state_info = format!("State {}:\n", stp.state_num);
             let mut num_conflicts = 0;
-            for cfp in &stp.cfp {
+            for cfp in &stp.configs {
                 let cfp = cfp.borrow();
                 let rule = cfp.rule.upgrade();
                 let rule = rule.borrow();
@@ -1345,12 +1349,12 @@ impl Lemon {
                 state_info += "\n";
             }
             state_info += "\n";
-            for ap in &stp.ap {
+            for ap in &stp.actions {
                 let ap = ap.borrow();
-                use EAction::*;
-                let sp = ap.sp.upgrade();
+                use ActionDetail::*;
+                let sp = ap.look_ahead.upgrade();
                 let sp = sp.borrow();
-                match ap.x {
+                match ap.detail {
                     Shift(ref stp) => {
                         let stp = stp.upgrade();
                         let stp = stp.borrow();
@@ -1423,7 +1427,7 @@ impl Lemon {
 
     fn state_find(&mut self, bp: &ConfigList) -> Option<Rc<RefCell<State>>> {
         let res = self.states.iter().find(|s| {
-            let ref sbp = s.borrow().bp;
+            let sbp = &s.borrow().basis;
             if sbp.len() != bp.len() {
                 return false;
             }
@@ -1448,12 +1452,12 @@ impl Lemon {
             //println!("I = {} < {}", i, cur.len());
             let cfp = cur[i].clone();
             let rp = cfp.borrow().rule.upgrade();
-            let ref rhs = rp.borrow().rhs;
+            let rhs = &rp.borrow().rhs;
             let dot = cfp.borrow().dot;
             if dot < rhs.len() {
                 let sp_span = &rhs[dot].0;
                 let sp = sp_span.upgrade();
-                let ref spt = sp.borrow().typ;
+                let spt = &sp.borrow().typ;
                 if let NonTerminal{ref rules, ..} = spt {
                     if rules.is_empty() {
                         if !sp.borrow().index == self.error_index {
@@ -1963,9 +1967,9 @@ impl Lemon {
 
             if a.n_action == 0 { continue }
             if a.is_tkn {
-                for ap in &a.stp.borrow().ap {
+                for ap in &a.stp.borrow().actions {
                     let ap = ap.borrow();
-                    let sp = ap.sp.upgrade();
+                    let sp = ap.look_ahead.upgrade();
                     let sp = sp.borrow();
                     if sp.index >= self.num_terminals { continue }
                     match self.compute_action(&ap) {
@@ -1979,9 +1983,9 @@ impl Lemon {
                 min_tkn_ofst = cmp::min(ofs, min_tkn_ofst);
                 max_tkn_ofst = cmp::max(ofs, max_tkn_ofst);
             } else {
-                for ap in &a.stp.borrow().ap {
+                for ap in &a.stp.borrow().actions {
                     let ap = ap.borrow();
-                    let sp = ap.sp.upgrade();
+                    let sp = ap.look_ahead.upgrade();
                     let sp = sp.borrow();
                     if sp.index < self.num_terminals { continue }
                     if sp.index == self.default_index { continue }
@@ -2003,9 +2007,8 @@ impl Lemon {
 
         let mut token_matches = Vec::new();
         for i in 1 .. self.num_terminals {
-            let ref s = self.symbols[i];
+            let s = self.symbols[i].borrow();
             let i = i as i32;
-            let s = s.borrow();
             let name = Ident::new(&s.name, Span::call_site());
             let yydt = Ident::new(&format!("YY{}", s.dt_num), Span::call_site());
             let dt = match s.data_type {
@@ -2497,7 +2500,7 @@ impl Lemon {
         for (i, r) in rp.rhs.iter().enumerate() {
             let span = &(r.0).1;
             let r_ = r.0.upgrade();
-            let ref alias = r.1;
+            let alias = &r.1;
             let r = r_.borrow();
             if r.index != self.error_index {
                 let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
@@ -2519,7 +2522,7 @@ impl Lemon {
         let mut yypattern = Vec::new();
         for r in &rp.rhs {
             let r_ = r.0.upgrade();
-            let ref alias = r.1;
+            let alias = &r.1;
             let r = r_.borrow();
             if r.index == self.error_index {
                 continue;
