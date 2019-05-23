@@ -2,6 +2,9 @@ use pomelo::*;
 
 pomelo! {
     %extra_argument String;
+    %syntax_error {
+        extra.push('0');
+    }
 
     start ::= lines;
     lines ::= line Eol;
@@ -11,7 +14,7 @@ pomelo! {
 }
 
 #[test]
-fn error() -> Result<(), String> {
+fn error() -> Result<(), ()> {
     use parser::*;
     use Token::*;
 
@@ -22,12 +25,9 @@ fn error() -> Result<(), String> {
         Two, Eol,
         One, Two, Three, Eol,
     ] {
-        match p.parse(t) {
-            Ok(_) => {}
-            Err(_) => break
-        }
+        p.parse(t)?;
     }
-    assert_eq!(p.extra(), "1");
+    assert_eq!(p.extra(), "101");
     //no EOI here, the parser never ends
 
     Ok(())

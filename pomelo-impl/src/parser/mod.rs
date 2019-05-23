@@ -1903,7 +1903,7 @@ impl Lemon {
 
         let yynstate = Literal::usize_unsuffixed(self.states.len());
         let yynrule = Literal::usize_unsuffixed(self.rules.len());
-        let yyerrorsymbol = if self.symbols[self.error_index].borrow_mut().use_cnt > 0 {
+        let yyerrorsymbol = if self.symbols[self.error_index].borrow_mut().use_cnt > 1 {
             self.error_index
         } else {
             0
@@ -2287,7 +2287,7 @@ impl Lemon {
                              **
                              */
                             if yy.yyerrcnt < 0 {
-                                yy_syntax_error(yy, yymajor, &yyminor);
+                                yy_syntax_error(yy, yymajor, &yyminor)?;
                             }
                             let yymx = yy.yystack[yy.yystack.len() - 1].major;
                             if yymx == YYERRORSYMBOL || yyerrorhit {
@@ -2321,7 +2321,7 @@ impl Lemon {
                              ** three input tokens have been successfully shifted.
                              */
                             if yy.yyerrcnt <= 0 {
-                                yy_syntax_error(yy, yymajor, &yyminor);
+                                yy_syntax_error(yy, yymajor, &yyminor)?;
                             }
                             yy.yyerrcnt = 3;
                             if yyendofinput {
@@ -2395,24 +2395,29 @@ impl Lemon {
                 assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
                 return YY_ACTION[i as usize] as i32;
             }
-
-
             fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_where {
                 yy.yystack.push(YYStackEntry {
                     stateno: new_state,
                     major,
                     minor});
             }
+        });
+        let ty_span = yyparsefail.span();
+        src.extend(quote_spanned!{ty_span=>
             fn yy_parse_failed #yy_generics_impl(yy: &mut Parser #yy_generics) -> #yyerrtype
                 #yy_generics_where {
                 yy.yystack.clear();
                 let extra = &mut yy.extra;
                 #yyparsefail
             }
-            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: &YYMinorType #yy_generics)
+        });
+        let ty_span = yysyntaxerror.span();
+        src.extend(quote_spanned!{ty_span=>
+            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: &YYMinorType #yy_generics) -> Result<(), #yyerrtype>
                 #yy_generics_where {
                 let extra = &mut yy.extra;
                 #yysyntaxerror
+                Ok(())
             }
         });
 
