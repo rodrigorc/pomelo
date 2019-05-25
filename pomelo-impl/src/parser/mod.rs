@@ -37,32 +37,26 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
 }
 
 type RcSymbol = RCell<Symbol>;
-type WeakSymbol = WRCell<Symbol>;
+type WSymbol = WRCell<Symbol>;
 
 //Symbols do not have a single point of definition, instead they can appear in many places,
 //thus, its Span is not in struct Symbol, but in some selected references, those created directly
 //in the Rule
 #[derive(Debug)]
-struct WeakSymbolWithSpan(WeakSymbol, Span);
+struct WSymbolSpan(WSymbol, Span);
 
-impl WeakSymbolWithSpan {
-    //Make Self behave similarly to WeakSymbol
-    fn borrow(&self) -> wrc::RCellRef<Symbol> {
-        self.0.borrow()
-    }
-    fn borrow_mut(&self) -> wrc::RCellRefMut<Symbol> {
-        self.0.borrow_mut()
-    }
-}
+//In RHS of a rule, we have symbols, spans and possibly alias
+#[derive(Debug)]
+struct WSymbolAlias(WSymbol, Span, Option<Pat>);
 
 #[derive(Debug)]
 struct Rule {
     span: Span,
-    lhs: WeakSymbolWithSpan,  //Left-hand side of the rule
+    lhs: WSymbolSpan,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<(WeakSymbolWithSpan, Option<Pat>)>,   //RHS symbols and aliases
+    rhs: Vec<WSymbolAlias>,   //RHS symbols and aliases
     code: Option<Block>,//The code executed when this rule is reduced
-    prec_sym: Option<WeakSymbol>, //Precedence symbol for this rule
+    prec_sym: Option<WSymbol>, //Precedence symbol for this rule
     precedence: Option<Precedence>, //Actual precedence for this rule
     index: usize,         //An index number for this rule
     can_reduce: bool,   //True if this rule is ever reduced
@@ -76,7 +70,7 @@ enum SymbolType {
         first_set: RuleSet,             //First-set for all rules of this symbol
         lambda: bool,                   //True if NonTerminal and can generate an empty string
     },
-    MultiTerminal(Vec<WeakSymbol>), //constituent symbols if MultiTerminal
+    MultiTerminal(Vec<WSymbol>), //constituent symbols if MultiTerminal
 }
 use SymbolType::*;
 
@@ -85,7 +79,7 @@ struct Symbol {
     name: String,               //Name of the symbol
     index: usize,               //Index number for this symbol
     typ: SymbolType,            //Either Terminal or NonTerminal
-    fallback: Option<WeakSymbol>, //Fallback token in case this token desn't parse
+    fallback: Option<WSymbol>, //Fallback token in case this token desn't parse
     precedence: Option<Precedence>,  //Precedence
     use_cnt: i32,               //Number of times used
     data_type: Option<Type>,    //Data type held by this object
@@ -137,7 +131,7 @@ fn config_cmp(a: &RCell<Config>, b: &RCell<Config>) -> Ordering {
 type ConfigList = Vec<RCell<Config>>;
 type WeakConfigList = Vec<WRCell<Config>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ActionDetail {
     Shift(WRCell<State>),
     Accept,
@@ -155,8 +149,8 @@ impl ActionDetail {
     fn cmp(a: &ActionDetail, b: &ActionDetail) -> Ordering {
         use ActionDetail::*;
         match a {
-            Shift(ref sa) => match b {
-                Shift(ref sb) => {
+            Shift(sa) => match b {
+                Shift(sb) => {
                     let rc = sa.borrow().state_num.cmp(&sb.borrow().state_num);
                     rc
                 }
@@ -167,10 +161,10 @@ impl ActionDetail {
                 Accept => Ordering::Equal,
                 _ => Ordering::Less,
             }
-            Reduce(ref ra) => match b {
+            Reduce(ra) => match b {
                 Shift(_) => Ordering::Greater,
                 Accept => Ordering::Greater,
-                Reduce(ref rb) => {
+                Reduce(rb) => {
                     let rc = ra.borrow().index.cmp(&rb.borrow().index);
                     rc
                 }
@@ -186,7 +180,7 @@ impl ActionDetail {
 //Every shift or reduce operation is stored as one of the following
 #[derive(Debug)]
 struct Action {
-  look_ahead: WeakSymbol,           //The look-ahead symbol
+  look_ahead: WSymbol,           //The look-ahead symbol
   detail: ActionDetail,
 }
 
@@ -226,26 +220,26 @@ pub struct Lemon {
     num_terminals: usize,               //symbols[0..num_terminals] are the terminal symbols
     symbols: Vec<RcSymbol>,   //Sorted array of symbols
     error_index: usize,
-    wildcard: Option<WeakSymbol>,     //The symbol that matches anything
+    wildcard: Option<WSymbol>,     //The symbol that matches anything
     arg: Option<Type>,        //Declaration of the extra argument to parser
     err_type: Option<Type>,        //Declaration of the error type of the parser
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
     var_type: Option<Type>,
-    start: Option<WeakSymbol>,
+    start: Option<WSymbol>,
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "SYM {} {}", self.index, self.name)?;
-        if let Some(ref precedence) = self.precedence {
+        if let Some(precedence) = &self.precedence {
             writeln!(f, "    precedence {:?}", precedence)?;
         }
-        match self.typ {
+        match &self.typ {
             Terminal => {
                 writeln!(f, "    T")?;
             }
-            NonTerminal{ rules: ref _rules, ref first_set, ref lambda } => {
+            NonTerminal{ first_set, lambda, .. } => {
                 writeln!(f, "    N l:{}", lambda)?;
                 writeln!(f, "      FS:{:?}", first_set)?;
 
@@ -485,7 +479,7 @@ impl ActTab {
                 None => {
                     print!(" {}:-----", j);
                 }
-                Some(ref ja) => {
+                Some(ja) => {
                     print!(" {}:{:>2}/{:<2}", j, ja.action, ja.lookahead);
                 }
             }
@@ -568,7 +562,7 @@ impl Lemon {
             precedence: 0,
         };
 
-        for decl in decls.into_iter() {
+        for decl in decls {
             lem.parse_one_decl(&mut pdata, decl)?;
         }
 
@@ -657,22 +651,22 @@ impl Lemon {
     fn find_rule_precedences(&mut self) {
         for rp in &self.rules {
             let mut rp = rp.borrow_mut();
-            if let Some(ref ps) = rp.prec_sym {
+            if let Some(ps) = &rp.prec_sym {
                 rp.precedence = ps.borrow().precedence;
                 continue;
             }
-            for (sp, _) in rp.rhs.iter() {
+            for WSymbolAlias(sp, ..) in &rp.rhs {
                 let b = sp.borrow();
-                match b.typ {
-                    MultiTerminal(ref sub_sym) => {
+                match &b.typ {
+                    MultiTerminal(sub_sym) => {
                         if let Some(prec) = sub_sym.into_iter().find_map(|msp| msp.borrow().precedence) {
-                            rp.prec_sym = Some(sp.0.clone().into());
+                            rp.prec_sym = Some(sp.clone());
                             rp.precedence = Some(prec);
                             break;
                         }
                     }
                     _ if b.precedence.is_some() => {
-                        rp.prec_sym = Some(sp.0.clone().into());
+                        rp.prec_sym = Some(sp.clone());
                         rp.precedence = b.precedence;
                         break;
                     }
@@ -692,11 +686,11 @@ impl Lemon {
             let mut progress = false;
             for rp in &self.rules {
                 let rp = rp.borrow();
-                let lhs = &rp.lhs;
+                let lhs = &rp.lhs.0;
                 if lhs.borrow().is_lambda() { continue }
 
                 let mut all_lambda = true;
-                for (sp, _) in &rp.rhs {
+                for WSymbolAlias(sp, ..) in &rp.rhs {
                     let sp = sp.borrow();
                     if !sp.is_lambda() {
                         all_lambda = false;
@@ -704,11 +698,11 @@ impl Lemon {
                     }
                 }
                 if all_lambda {
-                    if let NonTerminal{ ref mut lambda, ..} = lhs.borrow_mut().typ {
+                    if let NonTerminal{lambda, ..} = &mut lhs.borrow_mut().typ {
                         *lambda = true;
                         progress = true;
                     } else {
-                        assert!(false); //Only NonTerminals have lambda
+                        unreachable!("Only NonTerminals have lambda");
                     }
                 }
             }
@@ -720,28 +714,28 @@ impl Lemon {
 
             for rp in &self.rules {
                 let rp = rp.borrow();
-                let s1 = &rp.lhs;
-                for (s2, _) in &rp.rhs {
+                let s1 = &rp.lhs.0;
+                for WSymbolAlias(s2, ..) in &rp.rhs {
                     //First check if s1 and s2 are the same, or else s1.borrow_mut() will panic
-                    if s1.0 == s2.0 {
+                    if s1 == s2 {
                         if !s1.borrow().is_lambda() { break }
                         continue;
                     }
 
                     let b2 = s2.borrow();
-                    if let NonTerminal{ first_set: ref mut s1_first_set, .. } = s1.borrow_mut().typ {
-                        match b2.typ {
+                    if let NonTerminal{ first_set: s1_first_set, .. } = &mut s1.borrow_mut().typ {
+                        match &b2.typ {
                             Terminal => {
                                 progress |= s1_first_set.insert(b2.index);
                                 break;
                             }
-                            MultiTerminal(ref sub_sym) => {
+                            MultiTerminal(sub_sym) => {
                                 for ss in sub_sym {
                                     progress |= s1_first_set.insert(ss.borrow().index);
                                 }
                                 break;
                             }
-                            NonTerminal{ first_set: ref s2_first_set, lambda: b2_lambda, .. } => {
+                            NonTerminal{ first_set: s2_first_set, lambda: b2_lambda, .. } => {
                                 let n1 = s1_first_set.len();
                                 s1_first_set.append(&mut s2_first_set.clone());
                                 progress |= s1_first_set.len() > n1;
@@ -768,9 +762,8 @@ impl Lemon {
          ** start symbol in this case.) */
         for rp in &self.rules {
             let rp = rp.borrow_mut();
-            for (r,_) in &rp.rhs {
-                let span = &r.1;
-                if *sp == r.0 {
+            for WSymbolAlias(r, span, ..) in &rp.rhs {
+                if sp == r {
                     return error_span(*span, "start symbol on the RHS of a rule"); //tested
                 }
             }
@@ -781,7 +774,7 @@ impl Lemon {
         /* The basis configuration set for the first state
          ** is all rules which have the start symbol as their
          ** left-hand side */
-        if let NonTerminal{ref rules, ..} = sp.borrow().typ {
+        if let NonTerminal{rules, ..} = &sp.borrow().typ {
             for rp in rules {
                 rp.borrow_mut().lhs_start = true;
 
@@ -849,7 +842,7 @@ impl Lemon {
             let cfp = cfp.borrow();
             if let CfgStatus::Complete = cfp.status { continue }/* Already used by inner loop */
             if cfp.dot >= cfp.rule.borrow().rhs.len() { continue }  /* Can't shift this config */
-            let (ref sp, _) = cfp.rule.borrow().rhs[cfp.dot];       /* Symbol after the dot */
+            let WSymbolAlias(sp, ..) = &cfp.rule.borrow().rhs[cfp.dot];       /* Symbol after the dot */
             let mut basis = ConfigList::new();
             drop(cfp);
 
@@ -860,8 +853,8 @@ impl Lemon {
                 let bcfp = bcfp_.borrow();
                 if let CfgStatus::Complete = bcfp.status { continue }   /* Already used */
                 if bcfp.dot >= bcfp.rule.borrow().rhs.len() { continue }    /* Can't shift this one */
-                let (ref bsp, _) = bcfp.rule.borrow().rhs[bcfp.dot];        /* Get symbol after dot */
-                if bsp.0 != sp.0 { continue }                     /* Must be same as for "cfp" */
+                let WSymbolAlias(bsp, ..) = &bcfp.rule.borrow().rhs[bcfp.dot];        /* Get symbol after dot */
+                if *bsp != *sp { continue }                     /* Must be same as for "cfp" */
                 let newcfg = Lemon::add_config(&mut basis, bcfp.rule.clone(), bcfp.dot + 1);
                 drop(bcfp);
 
@@ -876,8 +869,8 @@ impl Lemon {
             /* The state "newstp" is reached from the state "stp" by a shift action
              ** on the symbol "sp" */
             let bsp = sp.borrow();
-            match bsp.typ {
-                MultiTerminal(ref sub_sym) => {
+            match &bsp.typ {
+                MultiTerminal(sub_sym) => {
                     for ss in sub_sym {
                         let detail = ActionDetail::Shift((&newstp).into());
                         aps.push(RefCell::new(Action {
@@ -889,7 +882,7 @@ impl Lemon {
                 _ => {
                     let detail = ActionDetail::Shift((&newstp).into());
                     aps.push(RefCell::new(Action {
-                        look_ahead: sp.0.clone(),
+                        look_ahead: sp.clone(),
                         detail
                     }));
                 }
@@ -1026,7 +1019,7 @@ impl Lemon {
         for stp in &self.states {
             for a in &stp.borrow().actions {
                 let a = a.borrow();
-                if let ActionDetail::Reduce(ref x) = a.detail {
+                if let ActionDetail::Reduce(x) = &a.detail {
                     x.borrow_mut().can_reduce = true;
                 }
             }
@@ -1055,9 +1048,9 @@ impl Lemon {
      */
     fn resolve_conflict(apx: &mut Action, apy: &mut Action) -> bool {
         use ActionDetail::*;
-        let (err, ax, ay) = match (&mut apx.detail, &mut apy.detail) {
+        let (err, ax, ay) = match (apx.detail.clone(), apy.detail.clone()) {
             (Shift(x), Shift(y)) => {
-                (true, Shift(x.clone()), SSConflict(y.clone()))
+                (true, Shift(x), SSConflict(y))
             }
             /* Use operator associativity to break tie */
             (Shift(x), Reduce(y)) => {
@@ -1067,12 +1060,12 @@ impl Lemon {
                 match (precx, precy) {
                     (Some(px), Some(py)) => {
                         match precedence_cmp(&px, &py) {
-                            Ordering::Less => (false, SHResolved(x.clone()), Reduce(y.clone())),
-                            Ordering::Equal => (false, Error, Reduce(y.clone())),
-                            Ordering::Greater => (false, Shift(x.clone()), RDResolved(y.clone())),
+                            Ordering::Less => (false, SHResolved(x), Reduce(y)),
+                            Ordering::Equal => (false, Error, Reduce(y)),
+                            Ordering::Greater => (false, Shift(x), RDResolved(y)),
                         }
                     }
-                    _ => (true, Shift(x.clone()), SRConflict(y.clone()))
+                    _ => (true, Shift(x), SRConflict(y))
                 }
             }
             (Reduce(x), Reduce(y)) => {
@@ -1082,12 +1075,12 @@ impl Lemon {
                 match (precx, precy) {
                     (Some(px), Some(py)) => {
                         match precedence_cmp(&px, &py) {
-                            Ordering::Less => (false, RDResolved(x.clone()), Reduce(y.clone())),
-                            Ordering::Equal => (true, Reduce(x.clone()), RRConflict(y.clone())),
-                            Ordering::Greater => (false, Reduce(x.clone()), RDResolved(y.clone())),
+                            Ordering::Less => (false, RDResolved(x), Reduce(y)),
+                            Ordering::Equal => (true, Reduce(x), RRConflict(y)),
+                            Ordering::Greater => (false, Reduce(x), RDResolved(y)),
                         }
                     }
-                    _ => (true, Reduce(x.clone()), RRConflict(y.clone()))
+                    _ => (true, Reduce(x), RRConflict(y))
                 }
             }
             /* The REDUCE/SHIFT case cannot happen because SHIFTs come before
@@ -1126,19 +1119,15 @@ impl Lemon {
                                 uses_wildcard = true;
                             }
                         }
-                        (Reduce(ref rp), _) => {
+                        (Reduce(rp), _) => {
                             if rp.borrow().lhs_start { continue }
-                            if let Some(ref rbest) = rbest {
-                                if rp == rbest { continue }
-                            }
+                            if rbest.as_ref() == Some(rp) { continue }
                             let mut n = 1;
                             for ap2 in &stp.actions[iap + 1..] {
                                 let ap2 = ap2.borrow();
                                 match &ap2.detail {
-                                    Reduce(ref rp2) => {
-                                        if let Some(ref rbest) = rbest {
-                                            if rp2 == rbest { continue }
-                                        }
+                                    Reduce(rp2) => {
+                                        if rbest.as_ref() == Some(rp2) { continue }
                                         if rp2 == rp {
                                             n += 1;
                                         }
@@ -1168,7 +1157,7 @@ impl Lemon {
                 for (iap, ap) in stp.actions.iter().enumerate() {
                     let bap = ap.borrow();
                     match &bap.detail {
-                        Reduce(ref rp) => {
+                        Reduce(rp) => {
                             if *rp == rbest {
                                 apbest = Some((iap, ap));
                                 break;
@@ -1182,7 +1171,7 @@ impl Lemon {
                     for ap2 in &stp.actions[iap + 1..] {
                         let mut ap2 = ap2.borrow_mut();
                         let unuse = match &ap2.detail {
-                            Reduce(ref rp) => {
+                            Reduce(rp) => {
                                 *rp == rbest
                             }
                             _ => false
@@ -1243,11 +1232,11 @@ impl Lemon {
     fn compute_action(&self, ap: &Action) -> Option<usize> {
         use ActionDetail::*;
         let act = match &ap.detail {
-            Shift(ref stp) => {
+            Shift(stp) => {
                 let n = stp.borrow().state_num;
                 n
             }
-            Reduce(ref rp) => {
+            Reduce(rp) => {
                 let n = rp.borrow().index + self.states.len();
                 n
             }
@@ -1271,13 +1260,13 @@ impl Lemon {
                 } else {
                     state_info += &format!("          ");
                 }
-                state_info += &format!("{} ::=", rule.lhs.borrow().name);
-                for (i, (sp,_)) in rule.rhs.iter().enumerate() {
+                state_info += &format!("{} ::=", rule.lhs.0.borrow().name);
+                for (i, WSymbolAlias(sp, ..)) in rule.rhs.iter().enumerate() {
                     if i == cfp.dot {
                         state_info += &format!(" *");
                     }
                     let sp = sp.borrow();
-                    if let MultiTerminal(ref sub_sym) = sp.typ {
+                    if let MultiTerminal(sub_sym) = &sp.typ {
                         for (j, ss) in sub_sym.iter().enumerate() {
                             let ss = ss.borrow();
                             if j == 0 {
@@ -1300,11 +1289,11 @@ impl Lemon {
                 let ap = ap.borrow();
                 use ActionDetail::*;
                 let sp = ap.look_ahead.borrow();
-                match ap.detail {
-                    Shift(ref stp) => {
+                match &ap.detail {
+                    Shift(stp) => {
                         state_info += &format!("{:>30} shift  {}", sp.name, stp.borrow().state_num);
                     }
-                    Reduce(ref rp) => {
+                    Reduce(rp) => {
                         state_info += &format!("{:>30} reduce {}", sp.name, rp.borrow().index);
                     }
                     Accept => {
@@ -1313,19 +1302,19 @@ impl Lemon {
                     Error => {
                         state_info += &format!("{:>30} error", sp.name);
                     }
-                    SRConflict(ref rp) |
-                    RRConflict(ref rp) => {
+                    SRConflict(rp) |
+                    RRConflict(rp) => {
                         state_info += &format!("{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.borrow().index);
                         num_conflicts += 1;
                     }
-                    SSConflict(ref stp) => {
+                    SSConflict(stp) => {
                         state_info += &format!("{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.borrow().state_num);
                         num_conflicts += 1;
                     }
-                    SHResolved(ref stp) => {
+                    SHResolved(stp) => {
                         state_info += &format!("{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.borrow().state_num);
                     }
-                    RDResolved(ref rp) => {
+                    RDResolved(rp) => {
                         state_info += &format!("{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.borrow().index);
                     }
                     _ => continue,
@@ -1343,7 +1332,7 @@ impl Lemon {
         for (i, sp) in self.symbols.iter().enumerate() {
             let sp = sp.borrow();
             print!("  {:3}: {}", i, sp.name);
-            if let NonTerminal{ref first_set, lambda, ..} = sp.typ {
+            if let NonTerminal{first_set, lambda, ..} = &sp.typ {
                 print!(":");
                 if lambda {
                     print!(" <lambda>");
@@ -1386,27 +1375,26 @@ impl Lemon {
             let rhs = &cfp.borrow().rule.borrow().rhs;
             let dot = cfp.borrow().dot;
             if dot < rhs.len() {
-                let sp_span = &rhs[dot].0;
-                let spt = &sp_span.borrow().typ;
-                if let NonTerminal{ref rules, ..} = spt {
+                let WSymbolAlias(sp, span, ..) = &rhs[dot];
+                if let NonTerminal{rules, ..} = &sp.borrow().typ {
                     if rules.is_empty() {
-                        if sp_span.borrow().index != self.error_index {
-                            return error_span(sp_span.1, "Nonterminal has no rules"); //tested
+                        if sp.borrow().index != self.error_index {
+                            return error_span(*span, "Nonterminal has no rules"); //tested
                         }
                     }
                     for newrp in rules {
                         let newcfp = Lemon::add_config(&mut cur, newrp.clone(), 0);
                         let mut broken = false;
-                        for xsp in &rhs[dot + 1 ..] {
-                            let xsp = xsp.0.borrow();
-                            match xsp.typ {
+                        for WSymbolAlias(xsp, ..) in &rhs[dot + 1 ..] {
+                            let xsp = xsp.borrow();
+                            match &xsp.typ {
                                 Terminal => {
                                     let mut newcfp = newcfp.borrow_mut();
                                     newcfp.fws.insert(xsp.index);
                                     broken = true;
                                     break;
                                 }
-                                MultiTerminal(ref sub_sym) => {
+                                MultiTerminal(sub_sym) => {
                                     let mut newcfp = newcfp.borrow_mut();
                                     for k in sub_sym {
                                         newcfp.fws.insert(k.borrow().index);
@@ -1414,7 +1402,7 @@ impl Lemon {
                                     broken = true;
                                     break;
                                 }
-                                NonTerminal{ ref first_set, lambda, ..} => {
+                                NonTerminal{ first_set, lambda, ..} => {
                                     let mut newcfp = newcfp.borrow_mut();
                                     newcfp.fws.append(&mut first_set.clone());
                                     if !lambda {
@@ -1455,19 +1443,19 @@ impl Lemon {
         }
     }
 
-    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WeakSymbol {
+    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WSymbol {
         self.symbol_new(name, typ)
     }
-    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WeakSymbol {
+    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WSymbol {
         self.symbol_new(name.to_string().as_ref(), typ)
     }
-    fn symbol_new_t_span(&mut self, name: &Ident, typ: NewSymbolType) -> WeakSymbolWithSpan {
+    fn symbol_new_t_span(&mut self, name: &Ident, typ: NewSymbolType) -> WSymbolSpan {
         let sym = self.symbol_new_t(name, typ);
-        WeakSymbolWithSpan(sym, name.span())
+        WSymbolSpan(sym, name.span())
     }
-    fn symbol_new(&mut self, name: &str, typ: NewSymbolType) -> WeakSymbol {
+    fn symbol_new(&mut self, name: &str, typ: NewSymbolType) -> WSymbol {
         if !name.is_empty() {
-            for s in self.symbols.iter() {
+            for s in &self.symbols {
                 let mut b = s.borrow_mut();
                 if b.name == name {
                     b.use_cnt += 1;
@@ -1639,7 +1627,7 @@ impl Lemon {
                         return error_span(id.span(), "token_class ids must be tokens"); //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
-                    if let MultiTerminal(ref mut sub_sym) = tk.borrow_mut().typ {
+                    if let MultiTerminal(sub_sym) = &mut tk.borrow_mut().typ {
                         sub_sym.push(sp.into());
                     } else {
                         unreachable!();
@@ -1659,7 +1647,7 @@ impl Lemon {
                 }
                 let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, alias)| {
-                    let tok = if toks.len() == 1 {
+                    let WSymbolSpan(tok, span) = if toks.len() == 1 {
                         let tok = toks.into_iter().next().unwrap();
                         let nst = if is_terminal_ident(&tok) {
                             NewSymbolType::Terminal
@@ -1679,19 +1667,18 @@ impl Lemon {
                             }
                             ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                         }
-                        if let MultiTerminal(ref mut sub_sym) = mt.borrow_mut().typ {
+                        if let MultiTerminal(sub_sym) = &mut mt.borrow_mut().typ {
                             sub_sym.extend(ss);
                         } else {
                             unreachable!();
                         }
-                        WeakSymbolWithSpan(mt.into(), span)
+                        WSymbolSpan(mt.into(), span)
                     };
-                    //let alias = alias.as_ref().map(|id| tokens_to_string(id));
-                    Ok((tok, alias))
+                    Ok(WSymbolAlias(tok, span, alias))
                 }).collect::<syn::Result<Vec<_>>>()?;
 
-                let prec_sym = match prec {
-                    Some(ref id) => {
+                let prec_sym = match &prec {
+                    Some(id) => {
                         if !is_terminal_ident(id) {
                             return error_span(id.span(), "The precedence symbol must be a token"); //tested
                         }
@@ -1713,7 +1700,7 @@ impl Lemon {
                     can_reduce: false,
                 };
                 let rule = Rc::new(RefCell::new(rule));
-                if let NonTerminal{ref mut rules, ..} = rule.borrow().lhs.borrow_mut().typ {
+                if let NonTerminal{rules, ..} = &mut rule.borrow().lhs.0.borrow_mut().typ {
                     rules.push((&rule).into());
                 } else {
                     unreachable!("lhs is not a non-terminal");
@@ -1740,9 +1727,9 @@ impl Lemon {
         let yycodetype = minimum_signed_type(self.symbols.len());
         let yyactiontype = minimum_unsigned_type(self.states.len() + self.rules.len() + 5);
         let yynocode = (self.symbols.len()) as i32;
-        let yywildcard = if let Some(ref wildcard) = self.wildcard {
+        let yywildcard = if let Some(wildcard) = &self.wildcard {
             let wildcard = wildcard.borrow();
-            if let Some(ref dt) = wildcard.data_type {
+            if let Some(dt) = &wildcard.data_type {
                 return error_span(dt.span(), "Wildcard token must not have a type"); //tested
             }
             wildcard.index
@@ -1771,8 +1758,8 @@ impl Lemon {
                 continue;
             }
 
-            if let Some(ref wildcard) = self.wildcard {
-               if WeakSymbol::from(sp) == *wildcard {
+            if let Some(wildcard) = &self.wildcard {
+               if WSymbol::from(sp) == *wildcard {
                    continue;
                }
             }
@@ -1780,8 +1767,8 @@ impl Lemon {
             let mut sp = sp.borrow_mut();
 
             /* Determine the data_type of each symbol and fill its dt_num */
-            let data_type = match sp.typ {
-                SymbolType::MultiTerminal(ref ss) => {
+            let data_type = match &sp.typ {
+                SymbolType::MultiTerminal(ss) => {
                     //MultiTerminals have the type of the first child.
                     //The type of the children need be the same only if an alias is used, so we
                     //cannot check it here
@@ -1807,10 +1794,9 @@ impl Lemon {
             };
         }
 
-        let mut yytoken = match self.token_enum {
-            Some(ref e) => e.clone(),
-            None => parse_quote!{ pub enum Token{} },
-        };
+        let mut yytoken = self.token_enum.
+            clone().
+            unwrap_or_else(|| parse_quote!{ pub enum Token{} });
 
         if !yytoken.variants.is_empty() {
             return error_span(yytoken.variants.span(), "Token enum declaration must be empty"); //tested
@@ -1940,8 +1926,8 @@ impl Lemon {
             let i = i as i32;
             let name = Ident::new(&s.name, Span::call_site());
             let yydt = Ident::new(&format!("YY{}", s.dt_num), Span::call_site());
-            let dt = match s.data_type {
-                Some(ref dt) => {
+            let dt = match &s.data_type {
+                Some(dt) => {
                     token_matches.push(quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x))));
                     Fields::Unnamed( parse_quote!{ (#dt) })
                 }
@@ -2043,11 +2029,11 @@ impl Lemon {
                     ).map_or(0, |(x,_)| x + 1);
         let yy_fallback = self.symbols[0..mx].iter().map(|p| {
                 let p = p.borrow();
-                match p.fallback {
+                match &p.fallback {
                     None => {
                         Ok(0)
                     }
-                    Some(ref fb) => {
+                    Some(fb) => {
                         let fb = fb.borrow();
                         match (fb.dt_num, p.dt_num) {
                             (0, _) => {}
@@ -2069,7 +2055,7 @@ impl Lemon {
          ** sequentually beginning with 0.
          */
         let yy_rule_info = self.rules.iter().map(|rp| {
-                let index = rp.borrow().lhs.borrow().index;
+                let index = rp.borrow().lhs.0.borrow().index;
                 let index = Literal::usize_unsuffixed(index);
                 quote!(#index)
             });
@@ -2411,7 +2397,7 @@ impl Lemon {
     }
 
     fn translate_code(&self, rp: &Rule) -> syn::Result<TokenStream> {
-        let lhs = rp.lhs.borrow();
+        let lhs = rp.lhs.0.borrow();
         let mut code = TokenStream::new();
 
         for i in (0..rp.rhs.len()).rev() {
@@ -2423,14 +2409,14 @@ impl Lemon {
         let yyrestype = lhs.data_type.as_ref().unwrap_or(&unit_type);
 
         let mut yymatch = Vec::new();
-        for (i, (ref r, ref alias)) in rp.rhs.iter().enumerate() {
+        for (i, WSymbolAlias(r, _, alias)) in rp.rhs.iter().enumerate() {
             let r = r.borrow();
             if r.index != self.error_index {
                 let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
                 yymatch.push(quote!(#yypi.minor));
             }
             match (alias, &r.typ) {
-                (Some(ref alias), MultiTerminal(ref ss)) => {
+                (Some(alias), MultiTerminal(ss)) => {
                     for or in &ss[1..] {
                         if r.dt_num != or.borrow().dt_num {
                             return error_span(alias.span(), "Compound tokens with an alias must all have the same type"); //tested
@@ -2442,17 +2428,15 @@ impl Lemon {
         }
 
         let mut yypattern = Vec::new();
-        for (ref r, ref alias) in &rp.rhs {
+        for WSymbolAlias(r, _, alias) in &rp.rhs {
             if r.borrow().index == self.error_index {
                 continue;
             }
             let yydt = Ident::new(&format!("YY{}", r.borrow().dt_num), Span::call_site());
             match alias {
-                Some(ref alias) => {
-                    if let Some(ref wildcard) = self.wildcard {
-                        if r.0 == *wildcard {
-                            return error_span(alias.span(), "Wildcard token must not have an alias"); //tested
-                        }
+                Some(alias) => {
+                    if Some(r) == self.wildcard.as_ref() {
+                        return error_span(alias.span(), "Wildcard token must not have an alias"); //tested
                     }
                     yypattern.push(quote!(YYMinorType::#yydt(#alias)))
                 }
