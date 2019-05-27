@@ -1961,24 +1961,22 @@ impl Lemon {
                     None => (self.states.len() + self.rules.len() + 2) as i32,
                     Some(a) => a.action as i32
                 }
-            });
+            }).map(Literal::i32_unsuffixed);
         let yy_action_len = yy_action.len();
         src.extend(quote!(static YY_ACTION: [i32; #yy_action_len] = [ #(#yy_action),* ];));
 
         /* Output the yy_lookahead table */
         let yy_lookahead = acttab.a_action.iter().map(|ac| {
-                let a = match ac {
+                match ac {
                     None => self.default_index,
                     Some(a) => a.lookahead,
-                };
-                let a = Literal::usize_unsuffixed(a);
-                quote!(#a)
-            });
+                }
+            }).map(Literal::usize_unsuffixed);
         let yy_lookahead_len = yy_lookahead.len();
         src.extend(quote!(static YY_LOOKAHEAD: [#yycodetype; #yy_lookahead_len] = [ #(#yy_lookahead),* ];));
 
         /* Output the yy_shift_ofst[] table */
-        let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
+        let n = self.states.iter().rposition(|st|
                         st.borrow().i_tkn_ofst.is_some()
                     ).unwrap();
         let yy_shift_use_dflt = min_tkn_ofst - 1;
@@ -1989,15 +1987,13 @@ impl Lemon {
         let yy_shift_ofst_type = minimum_signed_type(max_tkn_ofst as usize);
         let yy_shift_ofst = self.states[0..=n].iter().map(|stp| {
                 let stp = stp.borrow();
-                let ofst = stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1);
-                let ofst = Literal::i32_unsuffixed(ofst);
-                quote!(#ofst)
-            });
+                stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1)
+            }).map(Literal::i32_unsuffixed);
         let yy_shift_ofst_len = yy_shift_ofst.len();
         src.extend(quote!(static YY_SHIFT_OFST: [#yy_shift_ofst_type; #yy_shift_ofst_len] = [ #(#yy_shift_ofst),* ];));
 
         /* Output the yy_reduce_ofst[] table */
-        let (n,_) = self.states.iter().enumerate().rfind(|(_,st)|
+        let n = self.states.iter().rposition(|st|
                         st.borrow().i_nt_ofst.is_some()
                     ).unwrap();
         let yy_reduce_use_dflt = min_nt_ofst - 1;
@@ -2008,25 +2004,21 @@ impl Lemon {
         let yy_reduce_ofst_type = minimum_signed_type(max_nt_ofst as usize);
         let yy_reduce_ofst = self.states[0..=n].iter().map(|stp| {
                 let stp = stp.borrow();
-                let ofst = stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1);
-                let ofst = Literal::i32_unsuffixed(ofst);
-                quote!(#ofst)
-            });
+                stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1)
+            }).map(Literal::i32_unsuffixed);
         let yy_reduce_ofst_len = yy_reduce_ofst.len();
         src.extend(quote!(static YY_REDUCE_OFST: [#yy_reduce_ofst_type; #yy_reduce_ofst_len] = [ #(#yy_reduce_ofst),* ];));
 
         let yy_default = self.states.iter().map(|stp| {
-                let dflt = stp.borrow().i_dflt;
-                let dflt = Literal::usize_unsuffixed(dflt);
-                quote!(#dflt)
-            });
+                stp.borrow().i_dflt
+            }).map(Literal::usize_unsuffixed);
         let yy_default_len = yy_default.len();
         src.extend(quote!(static YY_DEFAULT: [#yyactiontype; #yy_default_len] = [ #(#yy_default),* ];));
 
         /* Generate the table of fallback tokens. */
-        let mx = self.symbols.iter().enumerate().rfind(|(_,sy)|
+        let mx = self.symbols.iter().rposition(|sy|
                         sy.borrow().fallback.is_some()
-                    ).map_or(0, |(x,_)| x + 1);
+                    ).map_or(0, |x| x + 1);
         let yy_fallback = self.symbols[0..mx].iter().map(|p| {
                 let p = p.borrow();
                 match &p.fallback {
@@ -2055,10 +2047,8 @@ impl Lemon {
          ** sequentually beginning with 0.
          */
         let yy_rule_info = self.rules.iter().map(|rp| {
-                let index = rp.borrow().lhs.0.borrow().index;
-                let index = Literal::usize_unsuffixed(index);
-                quote!(#index)
-            });
+                rp.borrow().lhs.0.borrow().index
+            }).map(Literal::usize_unsuffixed);
         let yy_rule_info_len = yy_rule_info.len();
         src.extend(quote!(static YY_RULE_INFO: [#yycodetype; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
 
