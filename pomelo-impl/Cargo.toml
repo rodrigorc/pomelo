@@ -1,7 +1,9 @@
 [package]
 name = "pomelo-impl"
 version = "0.1.0"
+license = "MIT/Apache-2.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
+description = "Implementation details for pomelo, not to be used directly"
 edition = "2018"
 
 [lib]
