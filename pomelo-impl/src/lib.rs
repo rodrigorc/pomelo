@@ -15,6 +15,7 @@ use syn::{Ident, Type, token};
 use syn::parse::{Parse, Result, Error, ParseStream};
 use syn::punctuated::Punctuated;
 
+#[doc(hidden)]
 #[proc_macro]
 pub fn pomelo_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let Decls(decls) = parse_macro_input!(input);

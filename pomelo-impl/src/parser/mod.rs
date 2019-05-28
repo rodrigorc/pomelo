@@ -1812,7 +1812,6 @@ impl Lemon {
             quote!(#ident(#k))
         });
         src.extend(quote!(
-            #[derive(Debug)]
             enum YYMinorType #yy_generics_impl
                 #yy_generics_where
             {
@@ -2059,7 +2058,6 @@ impl Lemon {
         let yyerrtype = self.err_type.clone().unwrap_or(unit_type.clone());
 
         src.extend(quote!{
-            #[derive(Debug)]
             struct YYStackEntry #yy_generics_impl #yy_generics_where {
                 stateno: i32,   /* The state-number */
                 major: i32,     /* The major token value.  This is the code
