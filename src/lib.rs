@@ -135,6 +135,56 @@ important differences between *yacc* and/or *bison* and *pomelo*.
  * *pomelo* uses no global variables. *yacc* and *bison* use global variables to pass information between the tokenizer and parser.
  * *pomelo* allows multiple parsers to be running simultaneously. *yacc* and *bison* do not.
 
+## Differences with *lemon*
+
+The most obvious difference here is that *lemon* is written in C and generates C code, while
+*pomelo* is written in Rust and produces Rust code. Many other differences arise from this fact:
+
+ * Since there is no command to call, there are no command line switches.
+ * No `%destructor` or `%default_desctructor` or `%token_desctructor` directives. Rust `drop` semantics should take care or everything.
+ * No `%parse_accept` directive. If you want to run code after the end-of-input, just do it after calling Parser::end_of_input().
+ * No `%stack_overflow` or `%stack_limit` directives. I'm not sure that in modern computers they are really needed, maybe they will be implemented in the future.
+ * No `%token_type` directive. See below for details.
+ * Rules are ended with a semi-colon instead of a point: it is more natural for a Rust programmer.
+
+Another important difference is that in *lemon* the `%type` directive only applies to
+non-terminals, while terminals all must have the same type, declared with `%token_type`. This is
+necessary because the `Parse()` function must be declared with a type able to accept any token. In
+*pomelo*, however, the input of the `parser()` function is an `enum` and the types of terminals and
+non-terminals can be equally defined just with `%type`.
+
+If left-hand side of a grammar rule has user defined type, then it must have a code block to produce its value. You can omit the code block if the rule has the following properties:
+
+ * There is exactly one symbol on the right-hand side with type.
+ * The type of that symbol is identical to the type of the left-hand side symbol's.
+ * The symbols on the right-hand side do not have alias defined.
+
+Then the rule code is auto-generated to just forward the value of that symbol. For example:
+
+```
+# #[macro_use] extern crate pomelo;
+# pomelo! {
+    %type expr String;
+    %type Number String;
+    expr ::= Number;
+    expr ::= LParen Number RParen;
+# }
+# fn main() {}
+```
+
+is equivalent to:
+
+```
+# #[macro_use] extern crate pomelo;
+# pomelo! {
+    %type expr String;
+    %type Number String;
+    expr ::= Number(A) { A }
+    expr ::= LParen Number(A) RParen { A }
+# }
+# fn main() {}
+```
+
 ## Macro input
 
 The main purpose of the `pomelo!` macro is to define the grammar for the parser. But it also

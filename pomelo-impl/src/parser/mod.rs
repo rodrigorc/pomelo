@@ -580,6 +580,7 @@ impl Lemon {
     pub fn build(&mut self) -> syn::Result<TokenStream> {
         self.prepare();
         self.find_rule_precedences();
+        self.normalize_rules()?;
         self.find_first_sets();
         self.find_states()?;
         self.find_links();
@@ -600,7 +601,7 @@ impl Lemon {
         Ok(src)
     }
 
-    pub fn prepare(&mut self) {
+    fn prepare(&mut self) {
         //First there are all the Terminals, the first one is $
         //Then the NonTerminals, the last one is {default}
         //And finally the MultiTerminals
@@ -675,6 +676,34 @@ impl Lemon {
             }
         }
     }
+
+    //If a rule has a typed LHS but not code, it will fail to compile, because the LHS must
+    //be assigned. Before issuing an error, we'll try to auto-fix it if the following is
+    //true:
+    // * no alias on the RHS
+    // * only one symbol in the RHS has type
+    // * the type of that symbol is the same as the type of the RHS
+    fn normalize_rules(&mut self) -> syn::Result<()> {
+        for rp in &self.rules {
+            let mut rp = rp.borrow_mut();
+            if rp.lhs.0.borrow().data_type.is_some() && rp.code.is_none() {
+                if rp.rhs.iter().all(|WSymbolAlias(_, _, a)| a.is_none()) {
+                    let mut rtyped = rp.rhs.iter_mut().filter(|WSymbolAlias(symbol, _, _)| symbol.borrow().data_type.is_some()).collect::<Vec<_>>();
+                    match &mut rtyped[..] {
+                        [WSymbolAlias(_, _, alias)] => {
+                            *alias = Some(parse_quote!(_A));
+                            rp.code = Some(parse_quote!({_A}));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                return error_span(rp.lhs.1, "This rule has a typed LHS but no code to assign it"); //tested
+            }
+        }
+        Ok(())
+    }
+
 
     /* Find all nonterminals which will generate the empty string.
      ** Then go back and compute the first sets of every nonterminal.
