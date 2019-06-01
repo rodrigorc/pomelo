@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
-use std::fmt;
+use std::fmt::{Display, Write};
 use std::hash::{Hash, Hasher};
 
 use proc_macro2::{Span, TokenStream, Literal};
@@ -235,63 +235,7 @@ pub struct Lemon {
     var_type: Option<Type>,
     start: Option<WSymbol>,
     optional_tokens: HashMap<WSymbol, WSymbolSpan>,
-}
-
-impl fmt::Display for Symbol {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "SYM {} {}", self.index, self.name)?;
-        if let Some(precedence) = &self.precedence {
-            writeln!(f, "    precedence {:?}", precedence)?;
-        }
-        match &self.typ {
-            Terminal => {
-                writeln!(f, "    T")?;
-            }
-            NonTerminal{ first_set, lambda, .. } => {
-                writeln!(f, "    N l:{}", lambda)?;
-                writeln!(f, "      FS:{:?}", first_set)?;
-
-            }
-            MultiTerminal{..} => {
-                writeln!(f, "    MT")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Display for Config {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let r = self.rule.borrow();
-        writeln!(f, "    R:{}.{}", r.index, self.dot)?;
-        writeln!(f, "    FWS:{:?}", self.fws)?;
-        Ok(())
-    }
-}
-
-impl fmt::Display for State {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "STA {}", self.state_num)?;
-        for c in &self.configs {
-            let c = c.borrow();
-            write!(f, "{}", c)?;
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Display for Lemon {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for s in &self.symbols {
-            let s = s.borrow();
-            write!(f, "{}", s)?;
-        }
-        for s in &self.states {
-            let s = s.borrow();
-            write!(f, "{}", s)?;
-        }
-        Ok(())
-    }
+    verbose: bool,
 }
 
 struct ParserData {
@@ -521,7 +465,7 @@ fn minimum_unsigned_type(max: usize) -> Ident {
     }
 }
 
-fn error<T>(msg: &'static str) -> syn::Result<T> {
+fn error<T, M: Display>(msg: M) -> syn::Result<T> {
     Err(syn::Error::new(Span::call_site(), msg))
 }
 
@@ -559,6 +503,7 @@ impl Lemon {
             var_type: None,
             start: None,
             optional_tokens: HashMap::new(),
+            verbose: false,
         };
 
         lem.symbol_new("$", NewSymbolType::Terminal);
@@ -594,11 +539,12 @@ impl Lemon {
         self.find_follow_sets();
         self.find_actions()?;
 
-        self.report_output();
-
-        if self.nconflict > 0 {
-            self.report_output();
-            return error("Parsing conflicts");
+        if self.verbose || self.nconflict > 0 {
+            let report = self.report_output();
+            if self.nconflict > 0 {
+                return error(format!("Parsing conflicts:\n {}", report));
+            }
+            println!("{}", report);
         }
 
         self.compress_tables();
@@ -1300,105 +1246,102 @@ impl Lemon {
         Some(act)
     }
 
-    fn report_output(&self) {
+    fn report_output(&self) -> String {
+        let mut state_info = String::new();
         for stp in &self.states {
             let stp = stp.borrow();
-            let mut state_info = format!("State {}:\n", stp.state_num);
-            let mut num_conflicts = 0;
+            writeln!(state_info, "State {}:", stp.state_num).unwrap();
             for cfp in &stp.configs {
                 let cfp = cfp.borrow();
                 let rule = cfp.rule.borrow();
                 if cfp.dot == rule.rhs.len() {
-                    state_info += &format!("    {:>5} ", format!("({})", rule.index));
+                    write!(state_info, "    {:>5} ", format!("({})", rule.index)).unwrap();
                 } else {
-                    state_info += &format!("          ");
+                    write!(state_info, "          ").unwrap();
                 }
-                state_info += &format!("{} ::=", rule.lhs.0.borrow().name);
+                write!(state_info, "{} ::=", rule.lhs.0.borrow().name).unwrap();
                 for (i, WSymbolAlias(sp, ..)) in rule.rhs.iter().enumerate() {
                     if i == cfp.dot {
-                        state_info += &format!(" *");
+                        write!(state_info, " *").unwrap();
                     }
                     let sp = sp.borrow();
                     if let MultiTerminal(sub_sym) = &sp.typ {
                         for (j, ss) in sub_sym.iter().enumerate() {
                             let ss = ss.borrow();
                             if j == 0 {
-                                state_info += &format!(" {}", ss.name);
+                                write!(state_info, " {}", ss.name).unwrap();
                             } else {
-                                state_info += &format!("|{}", ss.name);
+                                write!(state_info, "|{}", ss.name).unwrap();
                             }
                         }
                     } else {
-                        state_info += &format!(" {}", sp.name);
+                        write!(state_info, " {}", sp.name).unwrap();
                     }
                 }
                 if cfp.dot == rule.rhs.len() {
-                    state_info += &format!(" *");
+                    write!(state_info, " *").unwrap();
                 }
-                state_info += "\n";
+                writeln!(state_info).unwrap();
             }
-            state_info += "\n";
+            writeln!(state_info).unwrap();
             for ap in &stp.actions {
                 let ap = ap.borrow();
                 use ActionDetail::*;
                 let sp = ap.look_ahead.borrow();
                 match &ap.detail {
                     Shift(stp) => {
-                        state_info += &format!("{:>30} shift  {}", sp.name, stp.borrow().state_num);
+                        write!(state_info, "{:>30} shift  {}", sp.name, stp.borrow().state_num).unwrap();
                     }
                     Reduce(rp) => {
-                        state_info += &format!("{:>30} reduce {}", sp.name, rp.borrow().index);
+                        write!(state_info, "{:>30} reduce {}", sp.name, rp.borrow().index).unwrap();
                     }
                     Accept => {
-                        state_info += &format!("{:>30} accept", sp.name);
+                        write!(state_info, "{:>30} accept", sp.name).unwrap();
                     }
                     Error => {
-                        state_info += &format!("{:>30} error", sp.name);
+                        write!(state_info, "{:>30} error", sp.name).unwrap();
                     }
-                    SRConflict(rp) |
-                    RRConflict(rp) => {
-                        state_info += &format!("{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.borrow().index);
-                        num_conflicts += 1;
+                    SRConflict(rp) | RRConflict(rp) => {
+                        write!(state_info, "{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.borrow().index).unwrap();
                     }
                     SSConflict(stp) => {
-                        state_info += &format!("{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.borrow().state_num);
-                        num_conflicts += 1;
+                        write!(state_info, "{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.borrow().state_num).unwrap();
                     }
                     SHResolved(stp) => {
-                        state_info += &format!("{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.borrow().state_num);
+                        write!(state_info, "{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.borrow().state_num).unwrap();
                     }
                     RDResolved(rp) => {
-                        state_info += &format!("{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.borrow().index);
+                        write!(state_info, "{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.borrow().index).unwrap();
                     }
                     _ => continue,
                 }
-                state_info += "\n";
+                writeln!(state_info).unwrap();
             }
-            state_info += "\n";
-            if num_conflicts > 0 {
-                print!("{}", state_info);
+            writeln!(state_info).unwrap();
+        }
+        if self.verbose {
+            writeln!(state_info, "----------------------------------------------------").unwrap();
+            writeln!(state_info, "Symbols:").unwrap();
+            for (i, sp) in self.symbols.iter().enumerate() {
+                let sp = sp.borrow();
+                write!(state_info, "  {:3}: {}", i, sp.name).unwrap();
+                /*
+                   if let NonTerminal{first_set, lambda, ..} = &sp.typ {
+                   print!(":");
+                   if *lambda {
+                   print!(" <lambda>");
+                   }
+                   for j in 0 .. self.num_terminals {
+                   if first_set.contains(&j) {
+                   print!("={}", self.symbols[j].borrow().name);
+                   }
+                   }
+                   }
+                */
+                writeln!(state_info).unwrap();
             }
         }
-        /*
-        println!("----------------------------------------------------");
-        println!("Symbols:");
-        for (i, sp) in self.symbols.iter().enumerate() {
-            let sp = sp.borrow();
-            print!("  {:3}: {}", i, sp.name);
-            if let NonTerminal{first_set, lambda, ..} = &sp.typ {
-                print!(":");
-                if *lambda {
-                    print!(" <lambda>");
-                }
-                for j in 0 .. self.num_terminals {
-                    if first_set.contains(&j) {
-                        print!(" {}", self.symbols[j].borrow().name);
-                    }
-                }
-            }
-            println!();
-        }
-        */
+        state_info
     }
 
     fn state_find(&mut self, bp: &ConfigList) -> Option<RCell<State>> {
@@ -1692,6 +1635,9 @@ impl Lemon {
                     return error_span(e.span(), "token enum already defined"); //tested
                 }
                 self.token_enum = Some(e);
+            }
+            Decl::Verbose => {
+                self.verbose = true;
             }
             Decl::Rule{ lhs, rhs, action, prec } => {
                 let lhs_span = lhs.span();

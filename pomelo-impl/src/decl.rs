@@ -23,6 +23,7 @@ pub enum Decl {
     Wildcard(Ident),
     TokenClass(Ident, Vec<Ident>),
     Token(ItemEnum),
+    Verbose,
     Rule {
         lhs: Ident,
         rhs: Vec<(Vec<Ident>, bool, Option<Pat>)>,

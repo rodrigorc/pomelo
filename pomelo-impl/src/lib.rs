@@ -65,6 +65,7 @@ mod kw {
     custom_keyword!(wildcard);
     custom_keyword!(token_class);
     custom_keyword!(token);
+    custom_keyword!(verbose);
 }
 
 impl Parse for Decl {
@@ -197,6 +198,11 @@ impl Parse for Decl {
                 let e = input.parse()?;
                 input.parse::<Token![;]>()?;
                 Ok(Decl::Token(e))
+            } else if lookahead.peek(kw::verbose) {
+                // %verbose;
+                input.parse::<kw::verbose>()?;
+                input.parse::<Token![;]>()?;
+                Ok(Decl::Verbose)
             } else {
                 Err(lookahead.error())
             }
