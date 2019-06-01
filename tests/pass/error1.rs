@@ -2,6 +2,7 @@ use pomelo::*;
 
 pomelo! {
     %extra_argument String;
+    %syntax_error { extra.push('X'); Ok(()) }
 
     start ::= lines;
     lines ::= line Eol;
@@ -27,7 +28,7 @@ fn error() -> Result<(), ()> {
     ] {
         p.parse(t)?;
     }
-    assert_eq!(p.extra(), "10101");
+    assert_eq!(p.extra(), "1X01X01");
     //no EOI here, the parser never ends
 
     Ok(())

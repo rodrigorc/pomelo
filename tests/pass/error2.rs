@@ -4,6 +4,7 @@ pomelo! {
     %extra_argument String;
     %syntax_error {
         extra.push('0');
+        Ok(())
     }
 
     start ::= lines;

@@ -542,8 +542,8 @@ impl Lemon {
         let mut lem = Lemon {
             module: parse_quote!(parser),
             includes: Vec::new(),
-            syntax_error: parse_quote!({}),
-            parse_fail: parse_quote!({}),
+            syntax_error: parse_quote!({ Err(Default::default()) }),
+            parse_fail: parse_quote!({ Default::default() }),
             token_enum: None,
             states: Vec::new(),
             rules: Vec::new(),
@@ -2385,14 +2385,11 @@ impl Lemon {
             }
         });
         let ty_span = yysyntaxerror.span();
-        //yysyntaxerror could return and emit a unreachable_code in the Ok(()) below
         src.extend(quote_spanned!{ty_span=>
-            #[allow(unreachable_code)]
             fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: &YYMinorType #yy_generics) -> Result<(), #yyerrtype>
                 #yy_generics_where {
                 let extra = &mut yy.extra;
                 #yysyntaxerror
-                Ok(())
             }
         });
 

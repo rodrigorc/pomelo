@@ -85,7 +85,7 @@ A typical use of a *pomelo* parser might look something like the following:
 ```
 # #[macro_use] extern crate pomelo;
 # use std::io::BufRead;
-# pub struct Error;
+# #[derive(Default)] pub struct Error;
 # struct Tokenizer;
 # pub struct Expression;
 # pub struct State;
@@ -490,7 +490,12 @@ The `%include` directive is very handy using symbols declared elsewhere. For exa
 
 #### The `%syntax_error` directive
 
-The `%syntax_error` directive specify code that will be called when a syntax error occurs. This code is run inside a private function where `extra` is a mutable reference to the current `extra_argument`, and the return value is `Result<(), Error>`. If you return `Ok(())` or falls through, the parser will try to recover and continue. If you return `Err(_)` the parser will fail with that error value. See the section _Error Processing_ for more details.
+The `%syntax_error` directive specify code that will be called when a syntax error occurs. This code must evaluate to a value of type `Result<(), Error>` and you have available `extra` as a mutable reference to the current `extra_argument`. It is run in an function that returns the same type so you can also use the `?` operator. If it evaluates to `Ok(())`, the parser will try to recover and continue. If it evaluates to `Err(_)` or a `?` fails, the parser will fail with that error value. See the section _Error Processing_ for more details.
+
+By default it evaluates to `Err(Default::default())` so:
+
+ * if `Error` implements `Default` it will fail with the default error.
+ * if `Error` does not implement `Default` it will fail to compile and you *must* use this directive to create a meaningful one or to return Ok(()) and ignore the error.
 
 #### The `%parse_fail` directive
 
@@ -560,6 +565,8 @@ For example:
 ```text
 %error String;
 ```
+
+If your error type does not implement `Default` then you must also use the `%syntax_error` directive to create a meaningful error (or ignore it).
 
 #### The `%start_symbol` directive
 
