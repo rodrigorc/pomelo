@@ -1,5 +1,6 @@
 use std::rc::{Rc, Weak};
 use std::cell::{RefCell, Ref, RefMut};
+use std::hash::{Hash, Hasher};
 
 //A reference-counted RefCell
 pub type RCell<T> = Rc<RefCell<T>>;
@@ -49,13 +50,21 @@ impl<T> WRCell<T> {
     }
 }
 
+//Equality by address
 impl<T> PartialEq for WRCell<T> {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.w.upgrade().unwrap(), &other.w.upgrade().unwrap())
     }
 }
 
-impl <T> Eq for WRCell<T> {}
+impl<T> Eq for WRCell<T> {}
+
+//Hash by address
+impl<T: Hash + 'static> Hash for WRCell<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash(&*self.borrow(), state);
+    }
+}
 
 //this wraps an RC and a borrow, the borrow cannot be out of scope while
 //the RC is alive, so it is effectively 'static

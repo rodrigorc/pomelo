@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use proc_macro2::{Span, TokenStream, Literal};
 use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant, spanned::Spanned};
@@ -42,11 +43,11 @@ type WSymbol = WRCell<Symbol>;
 //Symbols do not have a single point of definition, instead they can appear in many places,
 //thus, its Span is not in struct Symbol, but in some selected references, those created directly
 //in the Rule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct WSymbolSpan(WSymbol, Span);
 
 //In RHS of a rule, we have symbols, spans and possibly alias
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct WSymbolAlias(WSymbol, Span, Option<Pat>);
 
 #[derive(Debug)]
@@ -92,6 +93,12 @@ impl Symbol {
             NonTerminal{lambda, ..} => lambda,
             _ => false
         }
+    }
+}
+
+impl Hash for Symbol {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
     }
 }
 
@@ -227,6 +234,7 @@ pub struct Lemon {
     has_fallback: bool,         //True if any %fallback is seen in the grammar
     var_type: Option<Type>,
     start: Option<WSymbol>,
+    optional_tokens: HashMap<WSymbol, WSymbolSpan>,
 }
 
 impl fmt::Display for Symbol {
@@ -471,7 +479,6 @@ impl ActTab {
             print!(" {:>2}/{:<2}", jla.action, jla.lookahead);
         }
         print!(" -> {}", res);
-        println!();
 
         print!("AC:");
         for (j, ja) in self.a_action.iter().enumerate() {
@@ -549,9 +556,9 @@ impl Lemon {
             err_type: None,
             nconflict: 0,
             has_fallback: false,
-
             var_type: None,
             start: None,
+            optional_tokens: HashMap::new(),
         };
 
         lem.symbol_new("$", NewSymbolType::Terminal);
@@ -586,7 +593,8 @@ impl Lemon {
         self.find_links();
         self.find_follow_sets();
         self.find_actions()?;
-        //println!("LEMON\n{}", self);
+
+        self.report_output();
 
         if self.nconflict > 0 {
             self.report_output();
@@ -596,7 +604,6 @@ impl Lemon {
         self.compress_tables();
         self.resort_states();
         let src = self.generate_source()?;
-        //println!("{:?}", self);
         //println!("default_index={}, num_terminals={}", self.default_index, self.num_terminals);
         Ok(src)
     }
@@ -637,6 +644,23 @@ impl Lemon {
         //Default start symbol is the LHS of the first rule
         if self.start.is_none() {
             self.start = Some(self.rules.first().unwrap().borrow().lhs.0.clone());
+        }
+
+        //For every optional token T of type ty (a new non-terminal _t of type Option<ty> has already been created),
+        //add two new rules:
+        //  _n ::= T { None }
+        //  _n ::= T(_A) { Some(_A) }
+        //We consume the optional_tokens map, it is no longer needed
+        let optional_tokens = std::mem::replace(&mut self.optional_tokens, Default::default());
+        for (sym_r, WSymbolSpan(sym_l, span)) in optional_tokens {
+            let dt = sym_r.borrow().data_type.clone().unwrap_or(parse_quote!(()));
+            sym_l.borrow_mut().data_type = Some(parse_quote!(Option<#dt>));
+            let sym_l = WSymbolSpan(sym_l, span);
+
+            self.create_rule(span, sym_l.clone(), vec![], Some(parse_quote!({ None })), None);
+
+            let rhs = WSymbolAlias(sym_r, span, Some(parse_quote!(_A)));
+            self.create_rule(span, sym_l, vec![rhs], Some(parse_quote!({ Some(_A) })), None);
         }
     }
 
@@ -1363,7 +1387,7 @@ impl Lemon {
             print!("  {:3}: {}", i, sp.name);
             if let NonTerminal{first_set, lambda, ..} = &sp.typ {
                 print!(":");
-                if lambda {
+                if *lambda {
                     print!(" <lambda>");
                 }
                 for j in 0 .. self.num_terminals {
@@ -1675,7 +1699,7 @@ impl Lemon {
                     return error_span(lhs_span, "LHS of rule must be non-terminal"); //tested
                 }
                 let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
-                let rhs = rhs.into_iter().map(|(toks, alias)| {
+                let rhs = rhs.into_iter().map(|(toks, optional, alias)| {
                     let WSymbolSpan(tok, span) = if toks.len() == 1 {
                         let tok = toks.into_iter().next().unwrap();
                         let nst = if is_terminal_ident(&tok) {
@@ -1685,7 +1709,19 @@ impl Lemon {
                         } else {
                             return error_span(tok.span(), "Symbol must start with uppercase or lowercase letter"); //tested
                         };
-                        self.symbol_new_t_span(&tok, nst)
+                        if optional {
+                            let sym_r = self.symbol_new_t(&tok, nst);
+                            if let Some(sym_l) = self.optional_tokens.get(&sym_r) {
+                                sym_l.clone()
+                            } else {
+                                let sym_l = self.symbol_new_s(&format!("_{}", self.optional_tokens.len()), NewSymbolType::NonTerminal);
+                                let sym_l = WSymbolSpan(sym_l, tok.span());
+                                self.optional_tokens.insert(sym_r, sym_l.clone());
+                                sym_l
+                            }
+                        } else {
+                            self.symbol_new_t_span(&tok, nst)
+                        }
                     } else {
                         let mt = self.symbol_new_s("", NewSymbolType::MultiTerminal);
                         let mut ss = Vec::new();
@@ -1716,28 +1752,32 @@ impl Lemon {
                     None => None
                 };
 
-                let index = self.rules.len();
-                let rule = Rule {
-                    span: lhs_span,
-                    lhs: lhs,
-                    lhs_start: false,
-                    rhs,
-                    code: action,
-                    prec_sym,
-                    precedence: None,
-                    index,
-                    can_reduce: false,
-                };
-                let rule = Rc::new(RefCell::new(rule));
-                if let NonTerminal{rules, ..} = &mut rule.borrow().lhs.0.borrow_mut().typ {
-                    rules.push((&rule).into());
-                } else {
-                    unreachable!("lhs is not a non-terminal");
-                }
-                self.rules.push(rule);
+                self.create_rule(lhs_span, lhs, rhs, action, prec_sym);
             }
         }
         Ok(())
+    }
+
+    fn create_rule(&mut self, span: Span, lhs: WSymbolSpan, rhs: Vec<WSymbolAlias>, code: Option<Block>, prec_sym: Option<WSymbol>) {
+        let index = self.rules.len();
+        let rule = Rule {
+            span,
+            lhs,
+            lhs_start: false,
+            rhs,
+            code,
+            prec_sym,
+            precedence: None,
+            index,
+            can_reduce: false,
+        };
+        let rule = Rc::new(RefCell::new(rule));
+        if let NonTerminal{rules, ..} = &mut rule.borrow().lhs.0.borrow_mut().typ {
+            rules.push((&rule).into());
+        } else {
+            unreachable!("lhs is not a non-terminal");
+        }
+        self.rules.push(rule);
     }
 
     fn generate_source(&self) -> syn::Result<TokenStream> {
@@ -2345,7 +2385,9 @@ impl Lemon {
             }
         });
         let ty_span = yysyntaxerror.span();
+        //yysyntaxerror could return and emit a unreachable_code in the Ok(()) below
         src.extend(quote_spanned!{ty_span=>
+            #[allow(unreachable_code)]
             fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: &YYMinorType #yy_generics) -> Result<(), #yyerrtype>
                 #yy_generics_where {
                 let extra = &mut yy.extra;

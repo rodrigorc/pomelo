@@ -89,11 +89,9 @@ pomelo! {
     jobject ::= JBool(B) { JObject::JBool(B) }
     jobject ::= JNull { JObject::JNull }
 
-    jdict ::= LBrace RBrace { JObject::JDict(HashMap::new()) }
-    jdict ::= LBrace jitem_list(D) RBrace { JObject::JDict(D) }
+    jdict ::= LBrace jitem_list?(D) RBrace { JObject::JDict(D.unwrap_or_else(HashMap::new)) }
 
-    jarray ::= LBracket RBracket { JObject::JArray(Vec::new()) }
-    jarray ::= LBracket jobject_list(A) RBracket { JObject::JArray(A) }
+    jarray ::= LBracket jobject_list?(A) RBracket { JObject::JArray(A.unwrap_or_else(Vec::new)) }
 
     jobject_list ::= jobject(J) { vec![J] }
     jobject_list ::= jobject_list(mut A) Comma jobject(J) { A.push(J); A }

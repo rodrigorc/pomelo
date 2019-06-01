@@ -185,6 +185,29 @@ is equivalent to:
 # fn main() {}
 ```
 
+Another extension to the *lemon* syntax is the *optional* flag: in the right-hand side of a rule
+you can add `?` at the end of a symbol to make it optional. The type of the alias is thus changed
+from `T` to `Option<T>`. If the symbol is found its value will be `Some(_)`, if it is not found its
+value will be `None`. For example:
+
+```text
+%type list T;
+
+array ::= LParen list?(D) RParen { ... }
+```
+
+is actually converted to something like:
+
+```text
+%type list T;
+%type optional_list Option<T>;
+
+array ::= LParen optional_list(D) RParen { ... }
+optional_list ::= list(D) { Some(D) }
+optional_list ::= { None }
+```
+
+
 ## Macro input
 
 The main purpose of the `pomelo!` macro is to define the grammar for the parser. But it also

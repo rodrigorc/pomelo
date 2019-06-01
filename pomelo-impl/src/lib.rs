@@ -202,7 +202,7 @@ impl Parse for Decl {
             }
         } else {
             // rule: id ::= rhs1 rhs2 ... [ { code } ] [[precedence]] [;]
-            // rhs:  id1|id2[(alias)]
+            // rhs:  id1|id2[?][(alias)]
             let lhs = input.parse::<Ident>().map_err(|e| Error::new(e.span(), "% or identifier expected"))?;
             input.parse::<Token![::]>()?;
             input.parse::<Token![=]>()?;
@@ -215,6 +215,12 @@ impl Parse for Decl {
                 //rhs
                 let toks = Punctuated::<Ident, Token![|]>::parse_separated_nonempty(input)?;
                 let toks = toks.into_iter().collect();
+                let optional = if input.peek(Token![?]) {
+                    input.parse::<Token![?]>()?;
+                    true
+                } else {
+                    false
+                };
                 let alias = if input.peek(token::Paren) {
                     let sub;
                     parenthesized!(sub in input);
@@ -222,7 +228,7 @@ impl Parse for Decl {
                 } else {
                     None
                 };
-                rhs.push((toks, alias));
+                rhs.push((toks, optional, alias));
             }
             let action = if input.peek(token::Brace) {
                 Some(input.parse()?)

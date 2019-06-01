@@ -25,7 +25,7 @@ pub enum Decl {
     Token(ItemEnum),
     Rule {
         lhs: Ident,
-        rhs: Vec<(Vec<Ident>, Option<Pat>)>,
+        rhs: Vec<(Vec<Ident>, bool, Option<Pat>)>,
         action: Option<Block>,
         prec: Option<Ident>,
     }

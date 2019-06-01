@@ -13,3 +13,4 @@ mod error1;
 mod error2;
 mod error3;
 mod auto_rule;
+mod optional;
