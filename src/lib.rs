@@ -495,7 +495,9 @@ The `%include` directive is very handy using symbols declared elsewhere. For exa
 
 #### The `%syntax_error` directive
 
-The `%syntax_error` directive specify code that will be called when a syntax error occurs. This code must evaluate to a value of type `Result<(), Error>` and you have available `extra` as a mutable reference to the current `extra_argument`. It is run in an function that returns the same type so you can also use the `?` operator. If it evaluates to `Ok(())`, the parser will try to recover and continue. If it evaluates to `Err(_)` or a `?` fails, the parser will fail with that error value. See the section _Error Processing_ for more details.
+The `%syntax_error` directive specify code that will be called when a syntax error occurs. This code must evaluate to a value of type `Result<(), Error>`, and it is run in an function that returns the same type so you can also use the `?` operator. If it evaluates to `Ok(())`, the parser will try to recover and continue. If it evaluates to `Err(_)` or a `?` fails, the parser will fail with that error value. See the section _Error Processing_ for more details.
+
+In this code you have available `extra` as a mutable reference to the current `extra_argument`, and `token` as a type of value `Option<Token>` with the token that triggered the error. If the error is caused by the end-of-input, then `token` will be `None`.
 
 By default it evaluates to `Err(Default::default())` so:
 

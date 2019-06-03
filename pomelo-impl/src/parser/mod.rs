@@ -1951,6 +1951,7 @@ impl Lemon {
         let yytoken_span = yytoken.brace_token.span;
 
         let mut token_matches = Vec::new();
+        let mut token_builds = Vec::new();
         for i in 1 .. self.num_terminals {
             let s = self.symbols[i].borrow();
             let i = i as i32;
@@ -1959,10 +1960,12 @@ impl Lemon {
             let dt = match &s.data_type {
                 Some(dt) => {
                     token_matches.push(quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x))));
+                    token_builds.push(quote!((#i, YYMinorType::#yydt(x)) => Some(Token::#name(x))));
                     Fields::Unnamed( parse_quote!{ (#dt) })
                 }
                 None => {
                     token_matches.push(quote!(Token::#name => (#i, YYMinorType::#yydt(()))));
+                    token_builds.push(quote!((#i, _) => Some(Token::#name)));
                     Fields::Unit
                 }
             };
@@ -1973,6 +1976,8 @@ impl Lemon {
                 discriminant: None,
             });
         }
+        token_builds.push(quote!(_ => None));
+
         yytoken.to_tokens(&mut src);
 
         src.extend(quote!(
@@ -1982,6 +1987,13 @@ impl Lemon {
             {
                 match t {
                     #(#token_matches),*
+                }
+            }
+            fn token_build #yy_generics_impl(i: i32, yy: YYMinorType #yy_generics) -> Option<Token #yy_generics>
+                #yy_generics_where
+            {
+                match (i, yy) {
+                    #(#token_builds),*
                 }
             }
         ));
@@ -2183,7 +2195,6 @@ impl Lemon {
             fn yy_parse_token #yy_generics_impl(yy: &mut Parser #yy_generics,
                                                         yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
                 #yy_generics_where {
-                let yyendofinput = yymajor==0;
                 if !yy.yystatus.is_normal() {
                     panic!("Cannot call parse after failure");
                 }
@@ -2191,7 +2202,7 @@ impl Lemon {
                 while yy.yystatus.is_normal() {
                     let yyact = yy_find_shift_action(yy, yymajor);
                     if yyact < YYNSTATE {
-                        assert!(!yyendofinput);  /* Impossible to shift the $ token */
+                        assert!(yymajor != 0);  /* Impossible to shift the $ token */
                         yy_shift(yy, yyact, yymajor, yyminor);
                         if yy.error_count > 0 { yy.error_count -= 1; }
                         break;
@@ -2220,9 +2231,9 @@ impl Lemon {
                              **
                              */
                             if yy.error_count == 0 {
-                                yy_syntax_error(yy, yymajor, &yyminor)?;
+                                yy_syntax_error(yy, yymajor, yyminor)?;
                             }
-                            if yyendofinput {
+                            if yymajor == 0 { //EOI
                                 yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));
                             }
@@ -2251,10 +2262,10 @@ impl Lemon {
                              ** three input tokens have been successfully shifted.
                              */
                             if yy.error_count == 0 {
-                                yy_syntax_error(yy, yymajor, &yyminor)?;
+                                yy_syntax_error(yy, yymajor, yyminor)?;
                             }
                             yy.error_count = 3;
-                            if yyendofinput {
+                            if yymajor == 0 { //EOI
                                 yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));
                             }
@@ -2343,8 +2354,9 @@ impl Lemon {
         });
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
-            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: &YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
                 #yy_generics_where {
+                let token = token_build(yymajor, yyminor);
                 let extra = &mut yy.extra;
                 #yysyntaxerror
             }
