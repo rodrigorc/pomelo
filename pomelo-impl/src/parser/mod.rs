@@ -2118,7 +2118,7 @@ impl Lemon {
             }
 
             pub struct Parser #yy_generics_impl #yy_generics_where {
-                yyerrcnt: i32, /* Shifts left before out of the error */
+                error_count: i32, /* Shifts left before out of the error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 yystatus: YYStatus<#yyroottype>,
@@ -2162,7 +2162,7 @@ impl Lemon {
                 }
                 fn new_priv(extra: #yyextratype) -> Self {
                     Parser {
-                        yyerrcnt: -1,
+                        error_count: 0,
                         yystack: vec![YYStackEntry {
                             stateno: 0,
                             major: 0,
@@ -2184,7 +2184,6 @@ impl Lemon {
                                                         yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
                 #yy_generics_where {
                 let yyendofinput = yymajor==0;
-                let mut yyerrorhit = false;
                 if !yy.yystatus.is_normal() {
                     panic!("Cannot call parse after failure");
                 }
@@ -2194,8 +2193,7 @@ impl Lemon {
                     if yyact < YYNSTATE {
                         assert!(!yyendofinput);  /* Impossible to shift the $ token */
                         yy_shift(yy, yyact, yymajor, yyminor);
-                        yy.yyerrcnt -= 1;
-
+                        if yy.error_count > 0 { yy.error_count -= 1; }
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
                         yy_reduce(yy, yyact - YYNSTATE)?;
@@ -2221,30 +2219,27 @@ impl Lemon {
                              **    shifted successfully.
                              **
                              */
-                            if yy.yyerrcnt < 0 {
+                            if yy.error_count == 0 {
                                 yy_syntax_error(yy, yymajor, &yyminor)?;
                             }
-                            let yymx = yy.yystack[yy.yystack.len() - 1].major;
-                            if yymx == YYERRORSYMBOL || yyerrorhit {
-                                break;
-                            } else {
-                                while !yy.yystack.is_empty() {
-                                    let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
-                                    if yyact < YYNSTATE {
-                                        if !yyendofinput {
-                                            yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0(()));
-                                        }
-                                        break;
-                                    }
-                                    yy.yystack.pop().unwrap();
-                                }
-                                if yy.yystack.is_empty() || yyendofinput {
-                                    yy.yystatus = YYStatus::Failed;
-                                    return Err(yy_parse_failed(yy));
-                                }
+                            if yyendofinput {
+                                yy.yystatus = YYStatus::Failed;
+                                return Err(yy_parse_failed(yy));
                             }
-                            yy.yyerrcnt = 3;
-                            yyerrorhit = true;
+                            while !yy.yystack.is_empty() {
+                                let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
+                                if yyact < YYNSTATE {
+                                    yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0(()));
+                                    break;
+                                }
+                                yy.yystack.pop().unwrap();
+                            }
+                            if yy.yystack.is_empty() {
+                                yy.yystatus = YYStatus::Failed;
+                                return Err(yy_parse_failed(yy));
+                            }
+                            yy.error_count = 3;
+                            break;
                         } else {
                             /* This is what we do if the grammar does not define ERROR:
                              **
@@ -2255,10 +2250,10 @@ impl Lemon {
                              ** As before, subsequent error messages are suppressed until
                              ** three input tokens have been successfully shifted.
                              */
-                            if yy.yyerrcnt <= 0 {
+                            if yy.error_count == 0 {
                                 yy_syntax_error(yy, yymajor, &yyminor)?;
                             }
-                            yy.yyerrcnt = 3;
+                            yy.error_count = 3;
                             if yyendofinput {
                                 yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));

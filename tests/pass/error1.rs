@@ -5,11 +5,12 @@ pomelo! {
     %syntax_error { extra.push('X'); Ok(()) }
 
     start ::= lines;
-    lines ::= line Eol;
-    lines ::= lines line Eol;
+    lines ::= line;
+    lines ::= lines line0;
 
+    line0 ::= error Eol { extra.push('0'); }
+    line0 ::= line Eol;
     line ::= One Two Three { extra.push('1'); }
-    line ::= error { extra.push('0'); }
 }
 
 #[test]
@@ -23,7 +24,8 @@ fn error() -> Result<(), ()> {
         One, Two, Three, Eol,
         Two, Eol,
         One, Two, Three, Eol,
-        One, One, Eol,
+        //One, One, One, Eol,
+        One, One, One, One, One, One, One, One, One, Eol,
         One, Two, Three, Eol,
     ] {
         p.parse(t)?;
