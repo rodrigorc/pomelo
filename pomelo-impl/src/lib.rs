@@ -66,6 +66,7 @@ mod kw {
     custom_keyword!(token_class);
     custom_keyword!(token);
     custom_keyword!(verbose);
+    custom_keyword!(extra_token);
 }
 
 impl Parse for Decl {
@@ -198,6 +199,12 @@ impl Parse for Decl {
                 let e = input.parse()?;
                 input.parse::<Token![;]>()?;
                 Ok(Decl::Token(e))
+            } else if lookahead.peek(kw::extra_token) {
+                // %extra_token type;
+                input.parse::<kw::extra_token>()?;
+                let typ = input.parse()?;
+                input.parse::<Token![;]>()?;
+                Ok(Decl::ExtraToken(typ))
             } else if lookahead.peek(kw::verbose) {
                 // %verbose;
                 input.parse::<kw::verbose>()?;

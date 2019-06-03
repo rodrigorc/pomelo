@@ -16,6 +16,13 @@ pomelo! {
 }
 
 pomelo! {
+    %extra_token i8;
+    %extra_token i8;
+            //~^ ERROR Extra token type already defined
+    input ::=;
+}
+
+pomelo! {
     %error i8;
     %error i8;
         //~^ ERROR Error type already defined

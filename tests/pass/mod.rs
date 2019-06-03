@@ -14,3 +14,4 @@ mod error2;
 mod error3;
 mod auto_rule;
 mod optional;
+mod extra_token;

@@ -235,6 +235,7 @@ pub struct Lemon {
     var_type: Option<Type>,
     start: Option<WSymbol>,
     optional_tokens: HashMap<WSymbol, WSymbolSpan>,
+    extra_token: Option<Type>,
     verbose: bool,
 }
 
@@ -503,6 +504,7 @@ impl Lemon {
             var_type: None,
             start: None,
             optional_tokens: HashMap::new(),
+            extra_token: None,
             verbose: false,
         };
 
@@ -590,6 +592,15 @@ impl Lemon {
         //Default start symbol is the LHS of the first rule
         if self.start.is_none() {
             self.start = Some(self.rules.first().unwrap().borrow().lhs.0.clone());
+        }
+        if let Some(extra_token) = &self.extra_token {
+            for i in 1 .. self.num_terminals {
+                let mut s = self.symbols[i].borrow_mut();
+                s.data_type = match s.data_type.take() {
+                    None => Some(parse_quote!(#extra_token)),
+                    Some(dt) => Some(parse_quote!((#extra_token, #dt)))
+                }
+            }
         }
 
         //For every optional token T of type ty (a new non-terminal _t of type Option<ty> has already been created),
@@ -1635,6 +1646,12 @@ impl Lemon {
                     return error_span(e.span(), "token enum already defined"); //tested
                 }
                 self.token_enum = Some(e);
+            }
+            Decl::ExtraToken(ty) => {
+                if self.extra_token.is_some() {
+                    return error_span(ty.span(), "Extra token type already defined");
+                }
+                self.extra_token = Some(ty);
             }
             Decl::Verbose => {
                 self.verbose = true;
