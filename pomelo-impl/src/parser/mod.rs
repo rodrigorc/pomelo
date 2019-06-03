@@ -232,7 +232,7 @@ pub struct Lemon {
     err_type: Option<Type>,        //Declaration of the error type of the parser
     nconflict: i32,             //Number of parsing conflicts
     has_fallback: bool,         //True if any %fallback is seen in the grammar
-    var_type: Option<Type>,
+    default_type: Option<Type>,
     start: Option<WSymbol>,
     optional_tokens: HashMap<WSymbol, WSymbolSpan>,
     extra_token: Option<Type>,
@@ -501,7 +501,7 @@ impl Lemon {
             err_type: None,
             nconflict: 0,
             has_fallback: false,
-            var_type: None,
+            default_type: None,
             start: None,
             optional_tokens: HashMap::new(),
             extra_token: None,
@@ -1570,10 +1570,10 @@ impl Lemon {
                 }
             }
             Decl::DefaultType(ty) => {
-                if self.var_type.is_some() {
+                if self.default_type.is_some() {
                     return error_span(ty.span(), "Default type already defined"); //tested
                 }
-                self.var_type = Some(ty);
+                self.default_type = Some(ty);
             }
             Decl::ExtraArgument(ty) => {
                 if self.arg.is_some() {
@@ -1805,23 +1805,22 @@ impl Lemon {
                     //The type of the children need be the same only if an alias is used, so we
                     //cannot check it here
                     let first = ss.first().unwrap().borrow();
-                    first.data_type.as_ref().or(self.var_type.as_ref()).cloned()
+                    first.data_type.clone()
                 }
                 SymbolType::Terminal => {
-                    //If a terminal does not define a type, use the %default_type
-                    sp.data_type.as_ref().or(self.var_type.as_ref()).cloned()
+                    sp.data_type.clone()
                 }
                 SymbolType::NonTerminal{..} => {
                     sp.data_type.clone()
                 }
             };
 
-            sp.data_type = data_type.clone();
-            sp.dt_num = match data_type {
+            sp.data_type = data_type.or_else(|| self.default_type.clone());
+            sp.dt_num = match &sp.data_type {
                 None => 0,
                 Some(cp) => {
                     let next = types.len() + 1;
-                    *types.entry(cp).or_insert(next)
+                    *types.entry(cp.clone()).or_insert(next)
                 }
             };
         }

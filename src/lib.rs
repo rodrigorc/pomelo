@@ -146,6 +146,7 @@ The most obvious difference here is that *lemon* is written in C and generates C
  * No `%stack_overflow` or `%stack_limit` directives. I'm not sure that in modern computers they are really needed, maybe they will be implemented in the future.
  * No `%token_type` directive. See below for details.
  * New `%extra_token` directive.
+ * `%default_type` applies to all symbols. In *lemon* it applies only to non-terminals because all terminals has the same `%token_type`.
  * Rules are ended with a semi-colon instead of a point: it is more natural for a Rust programmer.
 
 Another important difference is that in *lemon* the `%type` directive only applies to
@@ -535,8 +536,7 @@ make heavy use or right-associative operators. For this reason, it is recommende
 
 #### The `%default_type` directive
 
-This directive specifies a default type for the terminal tokens that do not specify a particual type.
-It is useful is most your terminal types have the same type. It does not affect non-terminal symbols.
+This directive specifies a default type for all the symbols that do not specify a type.
 
 #### The `%extra_argument` directive
 
