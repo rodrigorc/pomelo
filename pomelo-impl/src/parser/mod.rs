@@ -1786,10 +1786,6 @@ impl Lemon {
         let mut types = HashMap::<Type, usize>::new();
 
         for sp in &self.symbols {
-            if sp.borrow().index == self.error_index {
-                continue;
-            }
-
             if let Some(wildcard) = &self.wildcard {
                if WSymbol::from(sp) == *wildcard {
                    continue;
@@ -1854,7 +1850,7 @@ impl Lemon {
 
         let yynstate = Literal::usize_unsuffixed(self.states.len());
         let yynrule = Literal::usize_unsuffixed(self.rules.len());
-        let yyerrorsymbol = if self.symbols[self.error_index].borrow_mut().use_cnt > 1 {
+        let yyerrorsymbol = if self.symbols[self.error_index].borrow().use_cnt > 1 {
             self.error_index
         } else {
             0
@@ -2010,18 +2006,19 @@ impl Lemon {
         if let Some(extra_token) = &self.extra_token {
             let token_extra = &token_extra; //so that we can use the same array several times
             src.extend(quote!(
-                impl #yy_generics_impl Token #yy_generics #yy_generics_where {
-                    fn into_extra(self) -> #extra_token {
+                impl #yy_generics_impl Token #yy_generics #yy_generics_where
+                {
+                    pub fn into_extra(self) -> #extra_token {
                         match (self) {
                             #(#token_extra),*
                         }
                     }
-                    fn extra(&self) -> &#extra_token {
+                    pub fn extra(&self) -> &#extra_token {
                         match (self) {
                             #(#token_extra),*
                         }
                     }
-                    fn extra_mut(&mut self) -> &mut #extra_token {
+                    pub fn extra_mut(&mut self) -> &mut #extra_token {
                         match (self) {
                             #(#token_extra),*
                         }
@@ -2029,7 +2026,6 @@ impl Lemon {
                 }
             ));
         }
-
         let yy_action = acttab.a_action.iter().map(|ac| {
                 match ac {
                     None => (self.states.len() + self.rules.len() + 2) as i32,
@@ -2133,12 +2129,13 @@ impl Lemon {
         let yyerrtype = self.err_type.clone().unwrap_or(unit_type.clone());
 
         src.extend(quote!{
-            struct YYStackEntry #yy_generics_impl #yy_generics_where {
+            struct YYStackEntry #yy_generics_impl #yy_generics_where
+            {
                 stateno: i32,   /* The state-number */
                 major: i32,     /* The major token value.  This is the code
                                  ** number for the token at this stack level */
                 minor: YYMinorType #yy_generics,    /* The user-supplied minor token value.  This
-                                        ** is the value of the token  */
+                                                     ** is the value of the token  */
             }
 
             enum YYStatus<T> {
@@ -2161,8 +2158,9 @@ impl Lemon {
                 }
             }
 
-            pub struct Parser #yy_generics_impl #yy_generics_where {
-                error_count: i32, /* Shifts without error */
+            pub struct Parser #yy_generics_impl #yy_generics_where
+            {
+                tokens_without_error: i32, /* Shifts without error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 yystatus: YYStatus<#yyroottype>,
@@ -2198,7 +2196,8 @@ impl Lemon {
             }
         };
         src.extend(quote!{
-            impl #yy_generics_impl Parser #yy_generics #yy_generics_where {
+            impl #yy_generics_impl Parser #yy_generics #yy_generics_where
+            {
                 #impl_parser
                 pub fn parse(&mut self, token: Token #yy_generics) -> Result<(), #yyerrtype> {
                     let (a, b) = token_value(token);
@@ -2206,7 +2205,7 @@ impl Lemon {
                 }
                 fn new_priv(extra: #yyextratype) -> Self {
                     Parser {
-                        error_count: 0,
+                        tokens_without_error: 0,
                         yystack: vec![YYStackEntry {
                             stateno: 0,
                             major: 0,
@@ -2226,7 +2225,8 @@ impl Lemon {
         src.extend(quote!{
             fn yy_parse_token #yy_generics_impl(yy: &mut Parser #yy_generics,
                                                         yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
-                #yy_generics_where {
+                #yy_generics_where
+            {
                 if !yy.yystatus.is_normal() {
                     panic!("Cannot call parse after failure");
                 }
@@ -2238,14 +2238,15 @@ impl Lemon {
             }
             fn yy_parse_token_2 #yy_generics_impl(yy: &mut Parser #yy_generics,
                                                         yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
-                #yy_generics_where {
+                #yy_generics_where
+            {
 
                 while yy.yystatus.is_normal() {
                     let yyact = yy_find_shift_action(yy, yymajor);
                     if yyact < YYNSTATE {
                         assert!(yymajor != 0);  /* Impossible to shift the $ token */
                         yy_shift(yy, yyact, yymajor, yyminor);
-                        yy.error_count = yy.error_count.saturating_add(1);
+                        yy.tokens_without_error = yy.tokens_without_error.saturating_add(1);
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
                         yy_reduce(yy, yyact - YYNSTATE)?;
@@ -2258,29 +2259,25 @@ impl Lemon {
                         if YYERRORSYMBOL != 0 {
                             /* This is what we do if the grammar does define ERROR:
                              **
-                             **  * Call the %syntax_error function.
+                             **  * Begin popping the stack until we enter either:
+                             **     - we find the error symbol: discard the input token.
+                             **     - we get into a state where it is legal to shift the
+                             **       error symbol: we call %syntax_error and use the result
+                             **       to create an shift the error symbol.
+                             **     - we empty the stack: we fail the parse.
                              **
-                             **  * Begin popping the stack until we enter a state where
-                             **    it is legal to shift the error symbol, then shift
-                             **    the error symbol.
-                             **
-                             **  * Set the error count to three.
-                             **
-                             **  * Begin accepting and shifting new tokens.  No new error
-                             **    processing will occur until three tokens have been
-                             **    shifted successfully.
-                             **
+                             **  * Begin accepting and shifting new tokens.
                              */
                             if yymajor == 0 { //EOI
                                 return Err(yy_parse_failed(yy));
                             }
-                            if yy.error_count >= 3 {
-                                yy_syntax_error(yy, yymajor, yyminor)?;
-                            }
-                            while !yy.yystack.is_empty() {
+                            while let Some(top) = yy.yystack.last() {
+                                if top.major == YYERRORSYMBOL { break; }
+
                                 let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
                                 if yyact < YYNSTATE {
-                                    yy_shift(yy, yyact, YYERRORSYMBOL, YYMinorType::YY0(()));
+                                    let e = yy_syntax_error(yy, yymajor, yyminor)?;
+                                    yy_shift(yy, yyact, YYERRORSYMBOL, e);
                                     break;
                                 }
                                 yy.yystack.pop().unwrap();
@@ -2288,7 +2285,7 @@ impl Lemon {
                             if yy.yystack.is_empty() {
                                 return Err(yy_parse_failed(yy));
                             }
-                            yy.error_count = 0;
+                            yy.tokens_without_error = 0;
                             break;
                         } else {
                             /* This is what we do if the grammar does not define ERROR:
@@ -2303,10 +2300,10 @@ impl Lemon {
                             if yymajor == 0 { //EOI
                                 return Err(yy_parse_failed(yy));
                             }
-                            if yy.error_count >= 3 {
+                            if yy.tokens_without_error >= 3 {
                                 yy_syntax_error(yy, yymajor, yyminor)?;
                             }
-                            yy.error_count = 0;
+                            yy.tokens_without_error = 0;
                             break;
                         }
                     }
@@ -2318,8 +2315,8 @@ impl Lemon {
              ** Find the appropriate action for a parser given the terminal
              ** look-ahead token look_ahead.
              */
-            fn yy_find_shift_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where {
-
+            fn yy_find_shift_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where
+            {
                 let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
 
                 if stateno > YY_SHIFT_COUNT {
@@ -2357,7 +2354,8 @@ impl Lemon {
              ** Find the appropriate action for a parser given the non-terminal
              ** look-ahead token iLookAhead.
              */
-            fn yy_find_reduce_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where {
+            fn yy_find_reduce_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where
+            {
                 let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
                 if YYERRORSYMBOL != 0 && stateno > YY_REDUCE_COUNT {
                     return YY_DEFAULT[stateno as usize] as i32;
@@ -2374,7 +2372,8 @@ impl Lemon {
                 assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
                 return YY_ACTION[i as usize] as i32;
             }
-            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_where {
+            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_where
+            {
                 yy.yystack.push(YYStackEntry {
                     stateno: new_state,
                     major,
@@ -2384,21 +2383,34 @@ impl Lemon {
         let ty_span = yyparsefail.span();
         src.extend(quote_spanned!{ty_span=>
             fn yy_parse_failed #yy_generics_impl(yy: &mut Parser #yy_generics) -> #yyerrtype
-                #yy_generics_where {
+                #yy_generics_where
+            {
                 yy.yystack.clear();
                 let extra = &mut yy.extra;
                 #yyparsefail
             }
         });
+
+        let e = self.symbols[self.error_index].borrow();
+        let error_yydt = Ident::new(&format!("YY{}", e.dt_num), Span::call_site());
+        let error_ty = e.data_type.as_ref().unwrap_or(&unit_type);
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
-            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
-                #yy_generics_where {
+            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<#error_ty, #yyerrtype>
+                #yy_generics_where
+            {
                 let token = token_build(yymajor, yyminor);
                 let extra = &mut yy.extra;
                 #yysyntaxerror
             }
+            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<YYMinorType #yy_generics, #yyerrtype>
+                #yy_generics_where
+            {
+                let e = yy_syntax_error_2(yy, yymajor, yyminor)?;
+                Ok(YYMinorType::#error_yydt(e))
+            }
         });
+
 
         /* Generate code which execution during each REDUCE action */
         /* First output rules other than the default: rule */
@@ -2474,10 +2486,8 @@ impl Lemon {
         let mut yymatch = Vec::new();
         for (i, WSymbolAlias(r, _, alias)) in rp.rhs.iter().enumerate() {
             let r = r.borrow();
-            if r.index != self.error_index {
-                let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
-                yymatch.push(quote!(#yypi.minor));
-            }
+            let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
+            yymatch.push(quote!(#yypi.minor));
             match (alias, &r.typ) {
                 (Some(alias), MultiTerminal(ss)) => {
                     for or in &ss[1..] {
@@ -2492,9 +2502,6 @@ impl Lemon {
 
         let mut yypattern = Vec::new();
         for WSymbolAlias(r, _, alias) in &rp.rhs {
-            if r.borrow().index == self.error_index {
-                continue;
-            }
             let yydt = Ident::new(&format!("YY{}", r.borrow().dt_num), Span::call_site());
             match alias {
                 Some(alias) => {
