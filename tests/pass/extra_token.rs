@@ -8,6 +8,10 @@ pomelo! {
     %type line (usize, String);
     %type lines Vec<(usize, String)>;
     %type input Vec<(usize, String)>;
+    %syntax_error {
+        let x: usize = token.map(Token::into_extra).unwrap_or(0);
+        Ok(())
+    }
 
     input ::= lines;
     lines ::= line(L) { vec![L] }

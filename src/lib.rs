@@ -652,6 +652,16 @@ Sometimes, all tokens share a common piece of data. This is usually some kind of
 
 will change every terminal of type `T` into one of type `(Loc, T)`. Any terminal without a type will get a type of `Loc` instead. Non-terminal symbols are unchanged.
 
+If you use this directive with a type `E`, then the `Token` enum gains the following member functions:
+
+```text
+fn into_extra(self) -> E;
+fn extra(&self) -> &E;
+fn extra_mut(&mut self) -> &mut E;
+```
+
+These are particularly useful in the `%syntax_error` code to build a meaninful error message.
+
 #### The `%verbose` directive
 
 This directive makes *pomelo* to dump the built states of the grammar to the console. This is mostly useful for diagnostics or for fine tuning your grammar.

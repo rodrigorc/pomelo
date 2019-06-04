@@ -597,7 +597,7 @@ impl Lemon {
             for i in 1 .. self.num_terminals {
                 let mut s = self.symbols[i].borrow_mut();
                 s.data_type = match s.data_type.take() {
-                    None => Some(parse_quote!(#extra_token)),
+                    None => Some(extra_token.clone()),
                     Some(dt) => Some(parse_quote!((#extra_token, #dt)))
                 }
             }
@@ -1952,6 +1952,7 @@ impl Lemon {
 
         let mut token_matches = Vec::new();
         let mut token_builds = Vec::new();
+        let mut token_extra = Vec::new();
         for i in 1 .. self.num_terminals {
             let s = self.symbols[i].borrow();
             let i = i as i32;
@@ -1961,6 +1962,14 @@ impl Lemon {
                 Some(dt) => {
                     token_matches.push(quote!(Token::#name(x) => (#i, YYMinorType::#yydt(x))));
                     token_builds.push(quote!((#i, YYMinorType::#yydt(x)) => Some(Token::#name(x))));
+
+                    if let Some(extra_token) = &self.extra_token {
+                        if dt == extra_token {
+                            token_extra.push(quote!(Token::#name(e) => e));
+                        } else {
+                            token_extra.push(quote!(Token::#name((e, _)) => e));
+                        }
+                    }
                     Fields::Unnamed( parse_quote!{ (#dt) })
                 }
                 None => {
@@ -1997,6 +2006,29 @@ impl Lemon {
                 }
             }
         ));
+
+        if let Some(extra_token) = &self.extra_token {
+            let token_extra = &token_extra; //so that we can use the same array several times
+            src.extend(quote!(
+                impl #yy_generics_impl Token #yy_generics #yy_generics_where {
+                    fn into_extra(self) -> #extra_token {
+                        match (self) {
+                            #(#token_extra),*
+                        }
+                    }
+                    fn extra(&self) -> &#extra_token {
+                        match (self) {
+                            #(#token_extra),*
+                        }
+                    }
+                    fn extra_mut(&mut self) -> &mut #extra_token {
+                        match (self) {
+                            #(#token_extra),*
+                        }
+                    }
+                }
+            ));
+        }
 
         let yy_action = acttab.a_action.iter().map(|ac| {
                 match ac {
@@ -2130,7 +2162,7 @@ impl Lemon {
             }
 
             pub struct Parser #yy_generics_impl #yy_generics_where {
-                error_count: i32, /* Shifts left before out of the error */
+                error_count: i32, /* Shifts without error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 yystatus: YYStatus<#yyroottype>,
@@ -2198,13 +2230,22 @@ impl Lemon {
                 if !yy.yystatus.is_normal() {
                     panic!("Cannot call parse after failure");
                 }
+                let res = yy_parse_token_2(yy, yymajor, yyminor);
+                if res.is_err() {
+                    yy.yystatus = YYStatus::Failed;
+                }
+                res
+            }
+            fn yy_parse_token_2 #yy_generics_impl(yy: &mut Parser #yy_generics,
+                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+                #yy_generics_where {
 
                 while yy.yystatus.is_normal() {
                     let yyact = yy_find_shift_action(yy, yymajor);
                     if yyact < YYNSTATE {
                         assert!(yymajor != 0);  /* Impossible to shift the $ token */
                         yy_shift(yy, yyact, yymajor, yyminor);
-                        if yy.error_count > 0 { yy.error_count -= 1; }
+                        yy.error_count = yy.error_count.saturating_add(1);
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
                         yy_reduce(yy, yyact - YYNSTATE)?;
@@ -2230,12 +2271,11 @@ impl Lemon {
                              **    shifted successfully.
                              **
                              */
-                            if yy.error_count == 0 {
-                                yy_syntax_error(yy, yymajor, yyminor)?;
-                            }
                             if yymajor == 0 { //EOI
-                                yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));
+                            }
+                            if yy.error_count >= 3 {
+                                yy_syntax_error(yy, yymajor, yyminor)?;
                             }
                             while !yy.yystack.is_empty() {
                                 let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
@@ -2246,10 +2286,9 @@ impl Lemon {
                                 yy.yystack.pop().unwrap();
                             }
                             if yy.yystack.is_empty() {
-                                yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));
                             }
-                            yy.error_count = 3;
+                            yy.error_count = 0;
                             break;
                         } else {
                             /* This is what we do if the grammar does not define ERROR:
@@ -2261,14 +2300,13 @@ impl Lemon {
                              ** As before, subsequent error messages are suppressed until
                              ** three input tokens have been successfully shifted.
                              */
-                            if yy.error_count == 0 {
-                                yy_syntax_error(yy, yymajor, yyminor)?;
-                            }
-                            yy.error_count = 3;
                             if yymajor == 0 { //EOI
-                                yy.yystatus = YYStatus::Failed;
                                 return Err(yy_parse_failed(yy));
                             }
+                            if yy.error_count >= 3 {
+                                yy_syntax_error(yy, yymajor, yyminor)?;
+                            }
+                            yy.error_count = 0;
                             break;
                         }
                     }
