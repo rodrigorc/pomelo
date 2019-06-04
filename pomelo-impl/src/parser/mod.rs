@@ -220,19 +220,19 @@ pub struct Lemon {
     includes: Vec<Item>,
     syntax_error: Block,
     parse_fail: Block,
-    token_enum: Option<ItemEnum>,       //The enum Token{}, if specified with %token
-    states: Vec<RCell<State>>,    //Table of states sorted by state number
-    rules: Vec<RCell<Rule>>,      //List of all rules
-    default_index: usize,               //The index of the default symbol (always the last one in symbols)
-    num_terminals: usize,               //symbols[0..num_terminals] are the terminal symbols
-    symbols: Vec<RcSymbol>,   //Sorted array of symbols
-    error_index: usize,
-    wildcard: Option<WSymbol>,     //The symbol that matches anything
-    arg: Option<Type>,        //Declaration of the extra argument to parser
-    err_type: Option<Type>,        //Declaration of the error type of the parser
-    nconflict: i32,             //Number of parsing conflicts
-    has_fallback: bool,         //True if any %fallback is seen in the grammar
-    default_type: Option<Type>,
+    token_enum: Option<ItemEnum>,   //The enum Token{}, if specified with %token
+    states: Vec<RCell<State>>,      //Table of states sorted by state number
+    rules: Vec<RCell<Rule>>,        //List of all rules
+    default_index: usize,           //The index of the default symbol (always the last one in symbols)
+    num_terminals: usize,           //symbols[0..num_terminals] are the terminal symbols
+    symbols: Vec<RcSymbol>,         //Sorted array of symbols
+    error_symbol: WSymbol,          //The error symbol
+    wildcard: Option<WSymbol>,      //The symbol that matches anything
+    arg: Option<Type>,              //Declaration of the extra argument to parser
+    err_type: Option<Type>,         //Declaration of the error type of the parser
+    nconflict: i32,                 //Number of parsing conflicts
+    has_fallback: bool,             //True if any %fallback is seen in the grammar
+    default_type: Option<Type>,     //The %default_type
     start: Option<WSymbol>,
     optional_tokens: HashMap<WSymbol, WSymbolSpan>,
     extra_token: Option<Type>,
@@ -495,7 +495,7 @@ impl Lemon {
             default_index: 0,
             num_terminals: 0,
             symbols: Vec::new(),
-            error_index: 0,
+            error_symbol: WSymbol::default(),
             wildcard: None,
             arg: None,
             err_type: None,
@@ -509,7 +509,7 @@ impl Lemon {
         };
 
         lem.symbol_new("$", NewSymbolType::Terminal);
-        lem.symbol_new("error", NewSymbolType::NonTerminal);
+        lem.error_symbol = lem.symbol_new("error", NewSymbolType::NonTerminal);
 
 
         let mut pdata = ParserData {
@@ -586,8 +586,6 @@ impl Lemon {
         }
         self.num_terminals = last_terminal + 1;
         self.default_index = default_index;
-        //error symbol is the first NonTerminal, so it happens to be just here
-        self.error_index = self.num_terminals;
 
         //Default start symbol is the LHS of the first rule
         if self.start.is_none() {
@@ -1385,7 +1383,7 @@ impl Lemon {
                 let WSymbolAlias(sp, span, ..) = &rhs[dot];
                 if let NonTerminal{rules, ..} = &sp.borrow().typ {
                     if rules.is_empty() {
-                        if sp.borrow().index != self.error_index {
+                        if *sp != self.error_symbol {
                             return error_span(*span, "Nonterminal has no rules"); //tested
                         }
                     }
@@ -1848,10 +1846,11 @@ impl Lemon {
         ));
 
 
+        let error_symbol = self.error_symbol.borrow();
         let yynstate = Literal::usize_unsuffixed(self.states.len());
         let yynrule = Literal::usize_unsuffixed(self.rules.len());
-        let yyerrorsymbol = if self.symbols[self.error_index].borrow().use_cnt > 1 {
-            self.error_index
+        let yyerrorsymbol = if error_symbol.use_cnt > 1 {
+            error_symbol.index
         } else {
             0
         };
@@ -2391,9 +2390,8 @@ impl Lemon {
             }
         });
 
-        let e = self.symbols[self.error_index].borrow();
-        let error_yydt = Ident::new(&format!("YY{}", e.dt_num), Span::call_site());
-        let error_ty = e.data_type.as_ref().unwrap_or(&unit_type);
+        let error_yydt = Ident::new(&format!("YY{}", error_symbol.dt_num), Span::call_site());
+        let error_ty = error_symbol.data_type.as_ref().unwrap_or(&unit_type);
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
             fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<#error_ty, #yyerrtype>

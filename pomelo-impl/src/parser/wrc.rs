@@ -66,6 +66,14 @@ impl<T: Hash + 'static> Hash for WRCell<T> {
     }
 }
 
+impl<T> Default for WRCell<T> {
+    fn default() -> Self {
+        WRCell {
+            w: Default::default()
+        }
+    }
+}
+
 //this wraps an RC and a borrow, the borrow cannot be out of scope while
 //the RC is alive, so it is effectively 'static
 pub struct RCellRef<T: 'static> {
