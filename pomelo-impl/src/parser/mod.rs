@@ -2159,7 +2159,7 @@ impl Lemon {
 
             pub struct Parser #yy_generics_impl #yy_generics_where
             {
-                tokens_without_error: i32, /* Shifts without error */
+                error_count: u8, /* Shift since last error */
                 yystack: Vec<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 yystatus: YYStatus<#yyroottype>,
@@ -2204,7 +2204,7 @@ impl Lemon {
                 }
                 fn new_priv(extra: #yyextratype) -> Self {
                     Parser {
-                        tokens_without_error: 0,
+                        error_count: 0,
                         yystack: vec![YYStackEntry {
                             stateno: 0,
                             major: 0,
@@ -2245,7 +2245,7 @@ impl Lemon {
                     if yyact < YYNSTATE {
                         assert!(yymajor != 0);  /* Impossible to shift the $ token */
                         yy_shift(yy, yyact, yymajor, yyminor);
-                        yy.tokens_without_error = yy.tokens_without_error.saturating_add(1);
+                        yy.error_count = yy.error_count.saturating_sub(1);
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
                         yy_reduce(yy, yyact - YYNSTATE)?;
@@ -2284,7 +2284,7 @@ impl Lemon {
                             if yy.yystack.is_empty() {
                                 return Err(yy_parse_failed(yy));
                             }
-                            yy.tokens_without_error = 0;
+                            yy.error_count = 3;
                             break;
                         } else {
                             /* This is what we do if the grammar does not define ERROR:
@@ -2299,10 +2299,10 @@ impl Lemon {
                             if yymajor == 0 { //EOI
                                 return Err(yy_parse_failed(yy));
                             }
-                            if yy.tokens_without_error >= 3 {
+                            if yy.error_count == 0 {
                                 yy_syntax_error(yy, yymajor, yyminor)?;
                             }
-                            yy.tokens_without_error = 0;
+                            yy.error_count = 3;
                             break;
                         }
                     }
