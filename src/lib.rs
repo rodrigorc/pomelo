@@ -386,7 +386,7 @@ grammar rule to be something different, you can specify an alternative precedenc
 the symbol in square braces before the semi-colon or the rule code. For example:
 
 ```text
-expr = Minus expr [Not];
+expr ::= Minus expr [Not];
 ```
 
 This rule has a precedence equal to that of the Not symbol, not the Minus symbol as would have been the case by default.

@@ -70,8 +70,8 @@ pomelo! {
     tree ::= tree(A) Minus tree(B) { TestTree::Binary('-', Box::new(A), Box::new(B)) }
     tree ::= tree(A) Mult tree(B) { TestTree::Binary('*', Box::new(A), Box::new(B)) }
     tree ::= tree(A) Pow tree(B) { TestTree::Binary('^', Box::new(A), Box::new(B)) }
-    tree ::= Minus tree(A) { TestTree::Unary('<', Box::new(A)) } [Unary]
-    tree ::= Plus tree(A) { TestTree::Unary('>', Box::new(A)) } [Unary]
+    tree ::= Minus tree(A) [Unary] { TestTree::Unary('<', Box::new(A)) }
+    tree ::= Plus tree(A) [Unary] { TestTree::Unary('>', Box::new(A)) }
 }
 
 use parser::{parse_tree, parse_tree2};
