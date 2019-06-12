@@ -1,9 +1,12 @@
 [package]
 name = "pm-lexer"
-version = "0.1.0"
-authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
+version = "0.0.1"
 edition = "2018"
+license = "MIT OR Apache-2.0"
+authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
+description = "This is a sample lexer using the proc-macro crate, to be used in the pomelo testings"
+publish = false
 
 [dependencies]
-quote = "*"
-proc-macro2 = "*"
+quote = "0.6"
+proc-macro2 = "0.4"
