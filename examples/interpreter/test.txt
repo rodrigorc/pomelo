@@ -1,0 +1,8 @@
+fn test(a, b, c) {
+    if (a == b)
+        a = b + c;
+    return a + "h" + ""; // commented
+    return foo(1,bar(""*5, zed()),4);
+}
+
+var x = test(3 + 4, 5, 6);
