@@ -5,6 +5,8 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
 description = "Implementation details for pomelo, not to be used directly"
+repository = "https://github.com/rodrigorc/pomelo"
+documentation = "https://docs.rs/pomelo"
 
 [lib]
 proc-macro = true

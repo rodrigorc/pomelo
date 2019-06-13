@@ -21,11 +21,21 @@ pomelo! {
     %type numbers Vec<i32>;
     %type Number i32;
 
-    input ::= numbers(A) { A };
-    numbers ::= { Vec::new() }
-    numbers ::= numbers(mut L) Number(N) { L.push(N); L }
+    input ::= numbers?(A) { A.unwrap_or_else(Vec::new) };
+    numbers ::= Number(N) { vec![N] }
+    numbers ::= numbers(mut L) Comma Number(N) { L.push(N); L }
 }
-# fn main() {}
+fn main() -> Result<(), ()> {
+    let mut parser = parser::Parser::new();
+    parser.parse(parser::Token::Number(1))?;
+    parser.parse(parser::Token::Comma)?;
+    parser.parse(parser::Token::Number(2))?;
+    parser.parse(parser::Token::Comma)?;
+    parser.parse(parser::Token::Number(3))?;
+    let data = parser.end_of_input()?;
+    assert_eq!(data, vec![1, 2, 3]);
+    Ok(())
+}
 ```
 
 
