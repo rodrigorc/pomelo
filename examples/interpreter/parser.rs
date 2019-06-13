@@ -1,4 +1,4 @@
-use pomelo::*;
+use pomelo::pomelo;
 
 pomelo! {
     //%verbose;

@@ -1,5 +1,5 @@
 extern crate pm_lexer as lexer;
-use pomelo::*;
+use pomelo::pomelo;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]

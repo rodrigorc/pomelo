@@ -690,7 +690,7 @@ pub use pomelo_impl::pomelo_impl;
 
 /// The main macro of this crate. See the crate-level documentation for details.
 #[macro_export]
-macro_rules! pomelo { ($($t:tt)* ) => ( pomelo_impl!{$($t)*} ) }
+macro_rules! pomelo { ($($t:tt)* ) => ( $crate::pomelo_impl!{$($t)*} ) }
 
 #[cfg(feature = "lexer")]
 pub mod lexer;
