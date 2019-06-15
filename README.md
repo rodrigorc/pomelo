@@ -1,5 +1,10 @@
 # pomelo
+
 A procedural macro to create Lemon-like parsers.
+
+[![Travis-CI Status](https://travis-ci.com/rodrigorc/pomelo.svg?branch=master)](https://travis-ci.com/rodrigorc/pomelo)
+[![Latest version](https://img.shields.io/crates/v/pomelo.svg)](https://crates.io/crates/pomelo)
+[![Documentation](https://docs.rs/pomelo/badge.svg)](https://docs.rs/pomelo)
 
 Pomelo is a port to Rust of the Lemon Parser Generator (from now on, Lemon\_C) originally written
 by D. Richard Hipp for his SQLite parser.  It is based on a previous attempt to port Lemon to Rust
