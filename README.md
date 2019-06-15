@@ -14,10 +14,10 @@ citrus fruit.
 
 ## Getting Started
 
-[Pomelo](https://crates.io/crates/pomelo). It is recommended to look there for
+It is recommended to go to [crates.io](https://crates.io/crates/pomelo) for
 the newest released version, as well as links to the newest builds of the docs.
 
-Add the following dependency to your Cargo manifest...
+Just add the following dependency to your Cargo manifest:
 
 ```toml
 [dependencies]
