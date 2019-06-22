@@ -11,7 +11,7 @@ mod parser;
 
 use decl::*;
 
-use syn::{Ident, Type, token};
+use syn::{Ident, LitInt, Type, token};
 use syn::parse::{Parse, Result, Error, ParseStream};
 use syn::punctuated::Punctuated;
 
@@ -54,6 +54,7 @@ mod kw {
     custom_keyword!(include);
     custom_keyword!(syntax_error);
     custom_keyword!(parse_fail);
+    custom_keyword!(stack_overflow);
     custom_keyword!(left);
     custom_keyword!(right);
     custom_keyword!(nonassoc);
@@ -67,6 +68,7 @@ mod kw {
     custom_keyword!(token);
     custom_keyword!(verbose);
     custom_keyword!(extra_token);
+    custom_keyword!(stack_size);
 }
 
 impl Parse for Decl {
@@ -116,6 +118,14 @@ impl Parse for Decl {
                     input.parse::<Token![;]>()?;
                 }
                 Ok(Decl::ParseFail(code))
+            } else if lookahead.peek(kw::stack_overflow) {
+                // %stack_overflow { rust-block }
+                input.parse::<kw::stack_overflow>()?;
+                let code = input.parse()?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                }
+                Ok(Decl::StackOverflow(code))
             } else if lookahead.peek(kw::left) {
                 // %left token1 token2 ... ;
                 input.parse::<kw::left>()?;
@@ -205,6 +215,17 @@ impl Parse for Decl {
                 let typ = input.parse()?;
                 input.parse::<Token![;]>()?;
                 Ok(Decl::ExtraToken(typ))
+            } else if lookahead.peek(kw::stack_size) {
+                // %stack_size limit [type];
+                input.parse::<kw::stack_size>()?;
+                let limit = input.parse::<LitInt>()?.value() as usize;
+                let typ = if input.peek(Token![;]) {
+                    None
+                } else {
+                    Some(input.parse()?)
+                };
+                input.parse::<Token![;]>()?;
+                Ok(Decl::StackSize(limit, typ))
             } else if lookahead.peek(kw::verbose) {
                 // %verbose;
                 input.parse::<kw::verbose>()?;

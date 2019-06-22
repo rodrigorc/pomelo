@@ -153,11 +153,13 @@ The most obvious difference here is that *lemon* is written in C and generates C
  * Since there is no command to call, there are no command line switches.
  * No `%destructor` or `%default_desctructor` or `%token_desctructor` directives. Rust `drop` semantics should take care or everything.
  * No `%parse_accept` directive. If you want to run code after the end-of-input, just do it after calling Parser::end_of_input().
- * No `%stack_overflow` or `%stack_limit` directives. I'm not sure that in modern computers they are really needed, maybe they will be implemented in the future.
  * No `%token_type` directive. See below for details.
  * New `%extra_token` directive.
  * `%default_type` applies to all symbols. In *lemon* it applies only to non-terminals because all terminals has the same `%token_type`.
  * Rules are ended with a semi-colon instead of a point: it is more natural for a Rust programmer.
+ * The `%stack_overflow` directive returns an error type, just like `%parse_fail`.
+ * The `%stack_size` directive can specify an unlimited stack size, with 0, that makes the `%stack_overflow` code unreachable.
+ * The `%stack_size` directive can specify a second argument: the type of the stack implementation. This allows to write a `no-std` or an allocation-free parser.
 
 Another important difference is that in *lemon* the `%type` directive only applies to
 non-terminals, while terminals all must have the same type, declared with `%token_type`. This is
@@ -435,8 +437,10 @@ directives is arbitrary.
  * `%include`
  * `%syntax_error`
  * `%parse_fail`
+ * `%stack_overflow`
  * `%left`
  * `%right`
+ * `%stack_size`
  * `%nonassoc`
  * `%default_type`
  * `%extra_argument`
@@ -516,14 +520,44 @@ By default it evaluates to `Err(Default::default())` so:
 
 #### The `%parse_fail` directive
 
-The `%parse_fail` directive specifies a block of Rust code that is executed whenever the parser fails to complete. This code is not executed until the parser has tried and failed to resolve an input error using is usual error recovery strategy. This block is only invoked when parsing is unable to continue. It must evaluate to the defined `Error` type.
+The `%parse_fail` directive specifies a block of Rust code that is executed whenever the parser
+fails to complete. This code is not executed until the parser has tried and failed to resolve an
+input error using is usual error recovery strategy. This block is only invoked when parsing is
+unable to continue. It must evaluate to the defined `Error` type.
 
 ```text
-%error String
+%error String;
 %parse_failure {
     "Giving up.  Parser is hopelessly lost...".to_string()
 }
 ```
+
+By default it will  return `Default::default()`. If your `Error` type does not implement default()
+it will be a compiler error, so in this case you must use this directive.
+
+After a parse failure this parser object must not be used again.
+
+#### The `%stack_overflow` directive
+
+The `%stack_overflow` directive specifies a block of Rust code that is executed whenever the
+internal stack overflows. Beware of righ recursivity rules and right associativity! It must be evaluated to the defined `Error` type.
+
+By default it will  return `Default::default()`. If your `Error` type does not implement default()
+it will be a compiler error, so in this case you must use this directive.
+
+However, if you set your `%stack_size` to `0` (unlimited), then the stack will never overflow, so
+this directive is defaulted to `unreachable!()`.
+
+```text
+%error String;
+%stack_overflow {
+    "Parse stack overflow!".to_string()
+}
+```
+
+After a stack overflow this parser object must not be used again.
+
+See also the `%stack_size` directive for more details about the parser stack.
 
 #### The `%left`, `%right`, `%nonassoc` directives
 
@@ -545,6 +579,44 @@ Note the semi-colon that terminates each `%left`, `%right` or `%nonassoc` direct
 LALR(1) grammars can get into a situation where they require a large amount of stack space if you
 make heavy use or right-associative operators. For this reason, it is recommended that you use
 `%left` rather than `%right` whenever possible.
+
+#### The `%stack_size` directive
+
+If stack overflow is a problem and you can't resolve the trouble by using left-recursion, then you
+might want to increase the size of the parser's stack using this directive. Put an positive integer
+after the %stack_size directive and *pomelo* will generate a parse with a stack of the requested size.
+The default value is 100.
+
+```text
+%stack_size 2000;
+```
+
+If you specify the limit as `0` then it means _unlimited_. Beware that if your parser input is
+untrusted, having an unlimited stack may be an issue (it may eat up all your memory). If you do
+this, the code in `%stack_overflow` directive is never called.
+
+This directive has an additional optional parameter that is the type to implement the stack. It is
+by default `std::vec::Vec`, but you may specify whatever type you want, as long as it complies the
+following interface:
+ * It must have a single generic type argument, without restrictions other than `Sized`. That is, if you write `%stack_size 100 Type;` then `Type<T>` must be a valid type.
+ * It must implement the following member public functions, with the same signature and semantics as those in `Vec`:
+    - `new()`
+    - `push()`
+    - `pop()`
+    - `last()`
+    - `is_empty()`
+    - `clear()`
+    - `len()`
+
+You can use alternative types for the stack to make your parser `no-std` compliant. For example, using the `arrayvec` crate:
+
+```text
+%include {
+    use arrayvec::ArrayVec;
+    type Stackc<T> = ArrayVec<[T; 32]>;
+}
+%stack_size 32 Stack;
+```
 
 #### The `%default_type` directive
 
@@ -582,7 +654,10 @@ For example:
 %error String;
 ```
 
-If your error type does not implement `Default` then you must also use the `%syntax_error` directive to create a meaningful error (or ignore it).
+If your error type does not implement `Default` then you must also write:
+ * the `%syntax_error` directive to create a meaningful error (or ignore it).
+ * the `%parse_fail` directive to return an error in case an unrecoverable error happens.
+ * the `%stack_overflow` directive to return an error in case the internal stack overflows (unless you set the `%stack_size` to unlimited).
 
 #### The `%start_symbol` directive
 
@@ -694,6 +769,7 @@ the very first syntax error, of course, if there are no instances of the `error`
 your grammar.
 */
 
+#![no_std]
 
 #[doc(hidden)]
 pub use pomelo_impl::pomelo_impl;

@@ -16,3 +16,4 @@ mod auto_rule;
 mod optional;
 mod extra_token;
 mod typed_error;
+mod stack;

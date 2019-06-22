@@ -13,6 +13,7 @@ pub enum Decl {
     Include(Vec<Item>),
     SyntaxError(Block),
     ParseFail(Block),
+    StackOverflow(Block),
     Type(Ident, Type),
     Assoc(Associativity, Vec<Ident>),
     DefaultType(Type),
@@ -24,6 +25,7 @@ pub enum Decl {
     TokenClass(Ident, Vec<Ident>),
     Token(ItemEnum),
     ExtraToken(Type),
+    StackSize(usize, Option<Type>),
     Verbose,
     Rule {
         lhs: Ident,

@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt::{Display, Write};
 use std::hash::{Hash, Hasher};
+use std::borrow::Cow;
 
 use proc_macro2::{Span, TokenStream, Literal};
 use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant, spanned::Spanned};
@@ -218,8 +219,9 @@ struct State {
 pub struct Lemon {
     module: Ident,
     includes: Vec<Item>,
-    syntax_error: Block,
-    parse_fail: Block,
+    syntax_error: Option<Block>,
+    parse_fail: Option<Block>,
+    stack_overflow: Option<Block>,
     token_enum: Option<ItemEnum>,   //The enum Token{}, if specified with %token
     states: Vec<RCell<State>>,      //Table of states sorted by state number
     rules: Vec<RCell<Rule>>,        //List of all rules
@@ -236,6 +238,8 @@ pub struct Lemon {
     start: Option<WSymbol>,
     optional_tokens: HashMap<WSymbol, WSymbolSpan>,
     extra_token: Option<Type>,
+    stack_type: Option<Type>,
+    stack_limit: usize,
     verbose: bool,
 }
 
@@ -487,8 +491,9 @@ impl Lemon {
         let mut lem = Lemon {
             module: parse_quote!(parser),
             includes: Vec::new(),
-            syntax_error: parse_quote!({ Err(Default::default()) }),
-            parse_fail: parse_quote!({ Default::default() }),
+            syntax_error: None,
+            parse_fail: None,
+            stack_overflow: None,
             token_enum: None,
             states: Vec::new(),
             rules: Vec::new(),
@@ -505,6 +510,8 @@ impl Lemon {
             start: None,
             optional_tokens: HashMap::new(),
             extra_token: None,
+            stack_type: None,
+            stack_limit: 100,
             verbose: false,
         };
 
@@ -1533,10 +1540,22 @@ impl Lemon {
                 self.includes.extend(code);
             }
             Decl::SyntaxError(code) => {
-                self.syntax_error = code;
+                if self.syntax_error.is_some() {
+                    return error_span(code.span(), "Syntax error code already defined");
+                }
+                self.syntax_error = Some(code);
             }
             Decl::ParseFail(code) => {
-                self.parse_fail = code;
+                if self.parse_fail.is_some() {
+                    return error_span(code.span(), "Parse fail code already defined");
+                }
+                self.parse_fail = Some(code);
+            }
+            Decl::StackOverflow(code) => {
+                if self.stack_overflow.is_some() {
+                    return error_span(code.span(), "Stack overflow code already defined");
+                }
+                self.stack_overflow = Some(code);
             }
             Decl::Type(id, ty) => {
                 let nst = if is_terminal_ident(&id) {
@@ -1651,6 +1670,13 @@ impl Lemon {
                 }
                 self.extra_token = Some(ty);
             }
+            Decl::StackSize(limit, ty) => {
+                if self.stack_type.is_some() {
+                    return error_span(ty.span(), "Stack size already defined");
+                }
+                self.stack_limit = limit;
+                self.stack_type = ty;
+            }
             Decl::Verbose => {
                 self.verbose = true;
             }
@@ -1745,6 +1771,7 @@ impl Lemon {
         let mut src = TokenStream::new();
         src.extend(quote!{
             #![allow(dead_code)]
+            #![allow(unreachable_code)]
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
         });
@@ -1768,9 +1795,17 @@ impl Lemon {
         };
         let yywildcard = Literal::usize_unsuffixed(yywildcard);
 
+        let yystacktype = match self.stack_type {
+            Some(ref ty) => Cow::Borrowed(ty),
+            None => Cow::Owned(parse_quote!(std::vec::Vec)),
+        };
+        let yystacklimit = self.stack_limit;
+
         src.extend(quote!{
             const YYNOCODE: i32 = #yynocode;
             const YYWILDCARD: #yycodetype = #yywildcard;
+            type YYStack<T> = #yystacktype<T>;
+            const YYSTACKLIMIT: usize = #yystacklimit;
         });
 
         /*
@@ -1829,8 +1864,26 @@ impl Lemon {
 
         let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
 
-        let yysyntaxerror = &self.syntax_error;
-        let yyparsefail = &self.parse_fail;
+        let yysyntaxerror = match self.syntax_error {
+            Some(ref c) => Cow::Borrowed(c),
+            None => Cow::Owned(parse_quote!({ Err(Default::default()) })),
+        };
+        let yyparsefail = match self.parse_fail {
+            Some(ref c) => Cow::Borrowed(c),
+            None => Cow::Owned(parse_quote!({ Default::default() })),
+        };
+        let yystackoverflow = match self.stack_overflow {
+            Some(ref c) => Cow::Borrowed(c),
+            None => {
+                //stack_limit == 0, means unlimited, so the code will never be called
+                let c = if self.stack_limit == 0 {
+                    parse_quote!({ unreachable!() })
+                } else {
+                    parse_quote!({ Default::default() })
+                };
+                Cow::Owned(c)
+            }
+        };
 
         let minor_types = types.iter().map(|(k, v)| {
             let ident = Ident::new(&format!("YY{}", v), Span::call_site());
@@ -2122,10 +2175,10 @@ impl Lemon {
         src.extend(quote!(static YY_RULE_INFO: [#yycodetype; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
 
         let unit_type : Type = parse_quote!(());
-        let yyextratype = self.arg.clone().unwrap_or(unit_type.clone());
-        let start = self.start.as_ref().unwrap();
-        let yyroottype = start.borrow().data_type.clone().unwrap_or(unit_type.clone());
-        let yyerrtype = self.err_type.clone().unwrap_or(unit_type.clone());
+        let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
+        let start = self.start.as_ref().unwrap().borrow();
+        let yyroottype = start.data_type.as_ref().unwrap_or(&unit_type);
+        let yyerrtype = self.err_type.as_ref().unwrap_or(&unit_type);
 
         src.extend(quote!{
             struct YYStackEntry #yy_generics_impl #yy_generics_where
@@ -2160,13 +2213,13 @@ impl Lemon {
             pub struct Parser #yy_generics_impl #yy_generics_where
             {
                 error_count: u8, /* Shift since last error */
-                yystack: Vec<YYStackEntry #yy_generics>,
+                yystack: YYStack<YYStackEntry #yy_generics>,
                 extra: #yyextratype,
                 yystatus: YYStatus<#yyroottype>,
             }
         });
 
-        let impl_parser = if yyextratype == unit_type {
+        let impl_parser = if *yyextratype == unit_type {
             quote!{
                 pub fn new() -> Self {
                     Self::new_priv(())
@@ -2203,14 +2256,16 @@ impl Lemon {
                     yy_parse_token(self, a, b)
                 }
                 fn new_priv(extra: #yyextratype) -> Self {
-                    Parser {
-                        error_count: 0,
-                        yystack: vec![YYStackEntry {
+                    let mut yystack = YYStack::new();
+                    yystack.push(YYStackEntry {
                             stateno: 0,
                             major: 0,
                             minor: YYMinorType::YY0(())
-                        }],
-                        extra: extra,
+                    });
+                    Parser {
+                        error_count: 0,
+                        yystack,
+                        extra,
                         yystatus: YYStatus::Normal,
                     }
                 }
@@ -2244,7 +2299,7 @@ impl Lemon {
                     let yyact = yy_find_shift_action(yy, yymajor);
                     if yyact < YYNSTATE {
                         assert!(yymajor != 0);  /* Impossible to shift the $ token */
-                        yy_shift(yy, yyact, yymajor, yyminor);
+                        yy_shift(yy, yyact, yymajor, yyminor)?;
                         yy.error_count = yy.error_count.saturating_sub(1);
                         break;
                     } else if yyact < YYNSTATE + YYNRULE {
@@ -2276,7 +2331,7 @@ impl Lemon {
                                 let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
                                 if yyact < YYNSTATE {
                                     let e = yy_syntax_error(yy, yymajor, yyminor)?;
-                                    yy_shift(yy, yyact, YYERRORSYMBOL, e);
+                                    yy_shift(yy, yyact, YYERRORSYMBOL, e)?;
                                     break;
                                 }
                                 yy.yystack.pop().unwrap();
@@ -2316,7 +2371,7 @@ impl Lemon {
              */
             fn yy_find_shift_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where
             {
-                let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
+                let stateno = yy.yystack.last().unwrap().stateno;
 
                 if stateno > YY_SHIFT_COUNT {
                     return YY_DEFAULT[stateno as usize] as i32;
@@ -2355,7 +2410,7 @@ impl Lemon {
              */
             fn yy_find_reduce_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where
             {
-                let stateno = yy.yystack[yy.yystack.len() - 1].stateno;
+                let stateno = yy.yystack.last().unwrap().stateno;
                 if YYERRORSYMBOL != 0 && stateno > YY_REDUCE_COUNT {
                     return YY_DEFAULT[stateno as usize] as i32;
                 }
@@ -2371,12 +2426,22 @@ impl Lemon {
                 assert!(YY_LOOKAHEAD[i as usize] as i32 == look_ahead);
                 return YY_ACTION[i as usize] as i32;
             }
-            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, major: i32, minor: YYMinorType #yy_generics) #yy_generics_where
+        });
+        let ty_span = yystackoverflow.span();
+        src.extend(quote_spanned!{ty_span=>
+            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+                #yy_generics_where
             {
+                if YYSTACKLIMIT != 0 && yy.yystack.len() >= YYSTACKLIMIT {
+                    let token = token_build(yymajor, yyminor);
+                    let extra = &mut yy.extra;
+                    return Err(#yystackoverflow);
+                }
                 yy.yystack.push(YYStackEntry {
                     stateno: new_state,
-                    major,
-                    minor});
+                    major: yymajor,
+                    minor: yyminor});
+                Ok(())
             }
         });
         let ty_span = yyparsefail.span();
@@ -2390,8 +2455,8 @@ impl Lemon {
             }
         });
 
-        let error_yydt = Ident::new(&format!("YY{}", error_symbol.dt_num), Span::call_site());
         let error_ty = error_symbol.data_type.as_ref().unwrap_or(&unit_type);
+        let error_yydt = Ident::new(&format!("YY{}", error_symbol.dt_num), Span::call_site());
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
             fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<#error_ty, #yyerrtype>
@@ -2455,7 +2520,7 @@ impl Lemon {
                 let yygoto = YY_RULE_INFO[yyruleno as usize] as i32;
                 let yyact = yy_find_reduce_action(yy, yygoto);
                 if yyact < YYNSTATE {
-                    yy_shift(yy, yyact, yygoto, yygotominor);
+                    yy_shift(yy, yyact, yygoto, yygotominor)?;
                     Ok(())
                 } else {
                     assert!(yyact == YYNSTATE + YYNRULE + 1);
