@@ -432,26 +432,26 @@ directives is arbitrary.
 
 *Pomelo* supports the following special directives:
 
- * `%module`
- * `%type`
- * `%include`
- * `%syntax_error`
- * `%parse_fail`
- * `%stack_overflow`
- * `%left`
- * `%right`
- * `%stack_size`
- * `%nonassoc`
- * `%default_type`
- * `%extra_argument`
- * `%error`
- * `%start_symbol`
- * `%fallback`
- * `%wildcard`
- * `%token_class`
- * `%token`
- * `%extra_token`
- * `%verbose`
+ * [`%module`](#the-module-directive)
+ * [`%type`](#the-type-directive)
+ * [`%include`](#the-include-directive)
+ * [`%syntax_error`](#the-syntax_error-directive)
+ * [`%parse_fail`](#the-parse_fail-directive)
+ * [`%stack_overflow`](#the-stack_overflow-directive)
+ * [`%stack_size`](#the-stack_size-directive)
+ * [`%left`](#the-left-right-nonassoc-directives)
+ * [`%right`](#the-left-right-nonassoc-directives)
+ * [`%nonassoc`](#the-left-right-nonassoc-directives)
+ * [`%default_type`](#the-default_type-directive)
+ * [`%extra_argument`](#the-extra_argument-directive)
+ * [`%error`](#the-error-directive)
+ * [`%start_symbol`](#the-start_symbol-directive)
+ * [`%fallback`](#the-fallback-directive)
+ * [`%wildcard`](#the-wildcard-directive)
+ * [`%token_class`](#the-token_class-directive)
+ * [`%token`](#the-token-directive)
+ * [`%extra_token`](#the-extra_token-directive)
+ * [`%verbose`](#the-verbose-directive)
 
 #### The `%module` directive
 
@@ -559,27 +559,6 @@ After a stack overflow this parser object must not be used again.
 
 See also the `%stack_size` directive for more details about the parser stack.
 
-#### The `%left`, `%right`, `%nonassoc` directives
-
-The `%left`, `%right` and `%nonassoc` directives are used to declare precedences of terminal
-symbols. Every terminal symbol whose name appears in one of those directives is given the same
-associative precedence value. Subsequent directives have higher precedence. For example:
-
-```text
-%left And;
-%left Or;
-%nonassoc Eq Ne Gt Ge Lt Le;
-%left Plus Minus;
-%left Times Divide Mod;
-%right Exp Not;
-```
-
-Note the semi-colon that terminates each `%left`, `%right` or `%nonassoc` directive.
-
-LALR(1) grammars can get into a situation where they require a large amount of stack space if you
-make heavy use or right-associative operators. For this reason, it is recommended that you use
-`%left` rather than `%right` whenever possible.
-
 #### The `%stack_size` directive
 
 If stack overflow is a problem and you can't resolve the trouble by using left-recursion, then you
@@ -617,6 +596,27 @@ You can use alternative types for the stack to make your parser `no-std` complia
 }
 %stack_size 32 Stack;
 ```
+
+#### The `%left`, `%right`, `%nonassoc` directives
+
+The `%left`, `%right` and `%nonassoc` directives are used to declare precedences of terminal
+symbols. Every terminal symbol whose name appears in one of those directives is given the same
+associative precedence value. Subsequent directives have higher precedence. For example:
+
+```text
+%left And;
+%left Or;
+%nonassoc Eq Ne Gt Ge Lt Le;
+%left Plus Minus;
+%left Times Divide Mod;
+%right Exp Not;
+```
+
+Note the semi-colon that terminates each `%left`, `%right` or `%nonassoc` directive.
+
+LALR(1) grammars can get into a situation where they require a large amount of stack space if you
+make heavy use or right-associative operators. For this reason, it is recommended that you use
+`%left` rather than `%right` whenever possible.
 
 #### The `%default_type` directive
 
