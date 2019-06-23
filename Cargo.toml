@@ -1,6 +1,6 @@
 [package]
 name = "pomelo"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 license = "MIT OR Apache-2.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
@@ -15,10 +15,10 @@ documentation = "https://docs.rs/pomelo"
 members = ["pomelo-impl", "pm-lexer"]
 
 [dependencies]
-pomelo-impl = { version = "=0.1.0", path="pomelo-impl"}
+pomelo-impl = { version = "=0.1.1", path="pomelo-impl"}
 
 [dev-dependencies]
 quote = "0.6"
 proc-macro2 = "0.4"
 compiletest_rs = { version = "0.3", features = ["stable"] }
-pm-lexer = { version = "=0.1.0", path="pm-lexer" }
+pm-lexer = { version = "=0.1.1", path="pm-lexer" }
