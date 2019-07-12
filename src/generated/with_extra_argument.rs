@@ -16,7 +16,7 @@ pub mod parser {
     }
     impl Parser {
         /** To create a new `Parser` object you need to specify a value for the `extra` contained
-         * value */
+         value */
         pub fn new(extra: ExtraArgument) -> Self {
             unreachable!()
         }
