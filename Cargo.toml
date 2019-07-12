@@ -11,6 +11,13 @@ keywords = ["parser", "parser-generator", "lemon", "bison", "yacc"]
 repository = "https://github.com/rodrigorc/pomelo"
 documentation = "https://docs.rs/pomelo"
 
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+#For documentation purposes only, do not use!
+doc_generated = []
+
 [workspace]
 members = ["pomelo-impl", "pm-lexer"]
 
