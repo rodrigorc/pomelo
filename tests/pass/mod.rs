@@ -12,6 +12,7 @@ mod module;
 mod error1;
 mod error2;
 mod error3;
+mod error4;
 mod auto_rule;
 mod optional;
 mod extra_token;

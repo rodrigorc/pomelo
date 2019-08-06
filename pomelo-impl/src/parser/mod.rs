@@ -2224,7 +2224,7 @@ impl Lemon {
                 pub fn new() -> Self {
                     Self::new_priv(())
                 }
-                pub fn end_of_input(mut self) -> Result<#yyroottype, #yyerrtype> {
+                pub fn end_of_input(mut self) -> ::core::result::Result<#yyroottype, #yyerrtype> {
                     self.end_of_input_priv().map(|r| r.0)
                 }
             }
@@ -2233,7 +2233,7 @@ impl Lemon {
                 pub fn new(extra: #yyextratype) -> Self {
                     Self::new_priv(extra)
                 }
-                pub fn end_of_input(mut self) -> Result<(#yyroottype, #yyextratype), #yyerrtype> {
+                pub fn end_of_input(mut self) -> ::core::result::Result<(#yyroottype, #yyextratype), #yyerrtype> {
                     self.end_of_input_priv()
                 }
                 pub fn into_extra(self) -> #yyextratype {
@@ -2251,7 +2251,7 @@ impl Lemon {
             impl #yy_generics_impl Parser #yy_generics #yy_generics_where
             {
                 #impl_parser
-                pub fn parse(&mut self, token: Token #yy_generics) -> Result<(), #yyerrtype> {
+                pub fn parse(&mut self, token: Token #yy_generics) -> ::core::result::Result<(), #yyerrtype> {
                     let (a, b) = token_value(token);
                     yy_parse_token(self, a, b)
                 }
@@ -2269,7 +2269,7 @@ impl Lemon {
                         yystatus: YYStatus::Normal,
                     }
                 }
-                fn end_of_input_priv(mut self) -> Result<(#yyroottype, #yyextratype), #yyerrtype> {
+                fn end_of_input_priv(mut self) -> ::core::result::Result<(#yyroottype, #yyextratype), #yyerrtype> {
                     yy_parse_token(&mut self, 0, YYMinorType::YY0(()))?;
                     Ok((self.yystatus.unwrap(), self.extra))
                 }
@@ -2278,7 +2278,7 @@ impl Lemon {
 
         src.extend(quote!{
             fn yy_parse_token #yy_generics_impl(yy: &mut Parser #yy_generics,
-                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<(), #yyerrtype>
                 #yy_generics_where
             {
                 if !yy.yystatus.is_normal() {
@@ -2291,7 +2291,7 @@ impl Lemon {
                 res
             }
             fn yy_parse_token_2 #yy_generics_impl(yy: &mut Parser #yy_generics,
-                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+                                                        yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<(), #yyerrtype>
                 #yy_generics_where
             {
 
@@ -2429,7 +2429,7 @@ impl Lemon {
         });
         let ty_span = yystackoverflow.span();
         src.extend(quote_spanned!{ty_span=>
-            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<(), #yyerrtype>
+            fn yy_shift #yy_generics_impl(yy: &mut Parser #yy_generics, new_state: i32, yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<(), #yyerrtype>
                 #yy_generics_where
             {
                 if YYSTACKLIMIT != 0 && yy.yystack.len() >= YYSTACKLIMIT {
@@ -2459,14 +2459,14 @@ impl Lemon {
         let error_yydt = Ident::new(&format!("YY{}", error_symbol.dt_num), Span::call_site());
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
-            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<#error_ty, #yyerrtype>
+            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<#error_ty, #yyerrtype>
                 #yy_generics_where
             {
                 let token = token_build(yymajor, yyminor);
                 let extra = &mut yy.extra;
                 #yysyntaxerror
             }
-            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> Result<YYMinorType #yy_generics, #yyerrtype>
+            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<YYMinorType #yy_generics, #yyerrtype>
                 #yy_generics_where
             {
                 let e = yy_syntax_error_2(yy, yymajor, yyminor)?;
@@ -2511,7 +2511,7 @@ impl Lemon {
         };
 
         let yyreduce_fn = quote!(
-            fn yy_reduce #yy_generics_impl(yy: &mut Parser #yy_generics, yyruleno: i32) -> Result<(), #yyerrtype>
+            fn yy_reduce #yy_generics_impl(yy: &mut Parser #yy_generics, yyruleno: i32) -> ::core::result::Result<(), #yyerrtype>
                 #yy_generics_where
             {
                 let yygotominor: YYMinorType #yy_generics = match (yyruleno, &mut yy.extra) {
