@@ -108,3 +108,18 @@ pomelo! {
     input ::=;
 }
 
+pomelo! {
+    %parser struct Parser {};
+    %parser struct Parser {};
+             //~^ ERROR parser struct already defined
+    input ::=;
+}
+
+pomelo! {
+    %parser struct Parser {
+        A: ()
+     //~^ ERROR Parser struct declaration must be empty
+    };
+    input ::=;
+}
+

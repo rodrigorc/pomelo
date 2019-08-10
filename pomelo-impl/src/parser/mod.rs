@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use std::borrow::Cow;
 
 use proc_macro2::{Span, TokenStream, Literal};
-use syn::{Ident, Type, Item, ItemEnum, Block, Pat, Fields, Variant, spanned::Spanned};
+use syn::{Ident, Type, Item, ItemEnum, ItemStruct, Block, Pat, Fields, Variant, spanned::Spanned};
 use quote::ToTokens;
 use crate::decl::*;
 
@@ -223,6 +223,7 @@ pub struct Lemon {
     parse_fail: Option<Block>,
     stack_overflow: Option<Block>,
     token_enum: Option<ItemEnum>,   //The enum Token{}, if specified with %token
+    parser_struct: Option<ItemStruct>, //The struct Parser{}, if specified with %parser
     states: Vec<RCell<State>>,      //Table of states sorted by state number
     rules: Vec<RCell<Rule>>,        //List of all rules
     default_index: usize,           //The index of the default symbol (always the last one in symbols)
@@ -495,6 +496,7 @@ impl Lemon {
             parse_fail: None,
             stack_overflow: None,
             token_enum: None,
+            parser_struct: None,
             states: Vec::new(),
             rules: Vec::new(),
             default_index: 0,
@@ -1664,6 +1666,12 @@ impl Lemon {
                 }
                 self.token_enum = Some(e);
             }
+            Decl::Parser(e) => {
+                if self.parser_struct.is_some() {
+                    return error_span(e.span(), "parser struct already defined"); //tested
+                }
+                self.parser_struct = Some(e);
+            }
             Decl::ExtraToken(ty) => {
                 if self.extra_token.is_some() {
                     return error_span(ty.span(), "Extra token type already defined");
@@ -1861,8 +1869,23 @@ impl Lemon {
         if !yytoken.variants.is_empty() {
             return error_span(yytoken.variants.span(), "Token enum declaration must be empty"); //tested
         }
+        let (yy_generics_impl_token, yy_generics_token, yy_generics_where_token) = yytoken.generics.split_for_impl();
 
-        let (yy_generics_impl, yy_generics, yy_generics_where) = yytoken.generics.split_for_impl();
+        //If %parser is not used, then use a default Parser with the same generics as the Token
+        let mut yyparser = self.parser_struct.
+            clone().
+            unwrap_or_else(|| parse_quote!{ pub struct Parser #yy_generics_impl_token #yy_generics_where_token { } });
+
+        if let Some(f) = yyparser.fields.iter().next() {
+            return error_span(f.span(), "Parser struct declaration must be empty"); //tested
+        }
+
+        for g in yytoken.generics.params.iter() {
+            if !yyparser.generics.params.iter().any(|p| p == g) {
+                return error_span(g.span(), "Generic parameter in Token is not in Parser"); //tested
+            }
+        }
+        let (yy_generics_impl, yy_generics, yy_generics_where) = yyparser.generics.split_for_impl();
 
         let yysyntaxerror = match self.syntax_error {
             Some(ref c) => Cow::Borrowed(c),
@@ -1893,6 +1916,7 @@ impl Lemon {
             enum YYMinorType #yy_generics_impl
                 #yy_generics_where
             {
+                YY_(::core::marker::PhantomData<Parser #yy_generics>),
                 YY0(()),
                 #(#minor_types),*
             }
@@ -2035,18 +2059,18 @@ impl Lemon {
         }
         token_builds.push(quote!(_ => None));
 
-        yytoken.to_tokens(&mut src);
-
         src.extend(quote!(
+            #yytoken
+
             #[inline]
-            fn token_value #yy_generics_impl(t: Token #yy_generics) -> (i32, YYMinorType #yy_generics)
+            fn token_value #yy_generics_impl(t: Token #yy_generics_token) -> (i32, YYMinorType #yy_generics)
                 #yy_generics_where
             {
                 match t {
                     #(#token_matches),*
                 }
             }
-            fn token_build #yy_generics_impl(i: i32, yy: YYMinorType #yy_generics) -> Option<Token #yy_generics>
+            fn token_build #yy_generics_impl(i: i32, yy: YYMinorType #yy_generics) -> Option<Token #yy_generics_token>
                 #yy_generics_where
             {
                 match (i, yy) {
@@ -2058,7 +2082,7 @@ impl Lemon {
         if let Some(extra_token) = &self.extra_token {
             let token_extra = &token_extra; //so that we can use the same array several times
             src.extend(quote!(
-                impl #yy_generics_impl Token #yy_generics #yy_generics_where
+                impl #yy_generics_impl_token Token #yy_generics_token #yy_generics_where_token
                 {
                     pub fn into_extra(self) -> #extra_token {
                         match (self) {
@@ -2180,6 +2204,14 @@ impl Lemon {
         let yyroottype = start.data_type.as_ref().unwrap_or(&unit_type);
         let yyerrtype = self.err_type.as_ref().unwrap_or(&unit_type);
 
+        let parser_fields = parse_quote!({
+            error_count: u8, /* Shift since last error */
+            yystack: YYStack<YYStackEntry #yy_generics>,
+            extra: #yyextratype,
+            yystatus: YYStatus<#yyroottype>,
+        });
+        yyparser.fields = syn::Fields::Named(parser_fields);
+
         src.extend(quote!{
             struct YYStackEntry #yy_generics_impl #yy_generics_where
             {
@@ -2210,13 +2242,7 @@ impl Lemon {
                 }
             }
 
-            pub struct Parser #yy_generics_impl #yy_generics_where
-            {
-                error_count: u8, /* Shift since last error */
-                yystack: YYStack<YYStackEntry #yy_generics>,
-                extra: #yyextratype,
-                yystatus: YYStatus<#yyroottype>,
-            }
+            #yyparser
         });
 
         let impl_parser = if *yyextratype == unit_type {
@@ -2251,7 +2277,7 @@ impl Lemon {
             impl #yy_generics_impl Parser #yy_generics #yy_generics_where
             {
                 #impl_parser
-                pub fn parse(&mut self, token: Token #yy_generics) -> ::core::result::Result<(), #yyerrtype> {
+                pub fn parse(&mut self, token: Token #yy_generics_token) -> ::core::result::Result<(), #yyerrtype> {
                     let (a, b) = token_value(token);
                     yy_parse_token(self, a, b)
                 }

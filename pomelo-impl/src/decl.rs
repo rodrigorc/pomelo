@@ -1,4 +1,4 @@
-use syn::{Ident, Type, Item, ItemEnum, Block, Pat};
+use syn::{Ident, Type, Item, ItemEnum, ItemStruct, Block, Pat};
 
 #[derive(Debug, Copy, Clone)]
 pub enum Associativity {
@@ -26,6 +26,7 @@ pub enum Decl {
     Token(ItemEnum),
     ExtraToken(Type),
     StackSize(usize, Option<Type>),
+    Parser(ItemStruct),
     Verbose,
     Rule {
         lhs: Ident,

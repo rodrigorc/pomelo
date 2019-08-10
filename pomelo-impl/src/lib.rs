@@ -69,6 +69,7 @@ mod kw {
     custom_keyword!(verbose);
     custom_keyword!(extra_token);
     custom_keyword!(stack_size);
+    custom_keyword!(parser);
 }
 
 impl Parse for Decl {
@@ -231,6 +232,12 @@ impl Parse for Decl {
                 input.parse::<kw::verbose>()?;
                 input.parse::<Token![;]>()?;
                 Ok(Decl::Verbose)
+            } else if lookahead.peek(kw::parser) {
+                // %parser struct;
+                input.parse::<kw::parser>()?;
+                let e = input.parse()?;
+                input.parse::<Token![;]>()?;
+                Ok(Decl::Parser(e))
             } else {
                 Err(lookahead.error())
             }
