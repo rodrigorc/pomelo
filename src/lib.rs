@@ -26,13 +26,20 @@ pomelo! {
     numbers ::= numbers(mut L) Comma Number(N) { L.push(N); L }
 }
 fn main() -> Result<(), ()> {
-    let mut parser = parser::Parser::new();
-    parser.parse(parser::Token::Number(1))?;
-    parser.parse(parser::Token::Comma)?;
-    parser.parse(parser::Token::Number(2))?;
-    parser.parse(parser::Token::Comma)?;
-    parser.parse(parser::Token::Number(3))?;
-    let data = parser.end_of_input()?;
+    use parser::{Parser, Token};
+    //Real world code would use a tokenizer
+    let tokens = vec![
+        Token::Number(1),
+        Token::Comma,
+        Token::Number(2),
+        Token::Comma,
+        Token::Number(3),
+    ];
+    let mut p = Parser::new();
+    for tok in tokens.into_iter() {
+        p.parse(tok)?;
+    }
+    let data = p.end_of_input()?;
     assert_eq!(data, vec![1, 2, 3]);
     Ok(())
 }
