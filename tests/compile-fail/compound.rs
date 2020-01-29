@@ -31,3 +31,5 @@ pomelo! {
 
     start ::=;
 }
+
+fn main() {}

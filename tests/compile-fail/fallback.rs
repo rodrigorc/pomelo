@@ -9,3 +9,4 @@ pomelo! {
     input ::=;
 }
 
+fn main() {}

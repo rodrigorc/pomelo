@@ -5,3 +5,4 @@ pomelo! {
 //~^ ERROR must have some rules
 }
 
+fn main() {}

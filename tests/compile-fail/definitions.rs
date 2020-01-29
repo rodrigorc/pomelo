@@ -123,3 +123,4 @@ pomelo! {
     input ::=;
 }
 
+fn main() {}

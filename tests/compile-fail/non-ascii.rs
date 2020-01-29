@@ -11,3 +11,5 @@ pomelo! {
     input ::= _xxx;
            //~^ ERROR Symbol must start with uppercase or lowercase letter
 }
+
+fn main() {}

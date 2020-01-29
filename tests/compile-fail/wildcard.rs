@@ -10,3 +10,4 @@ pomelo! {
         { }
 }
 
+fn main() {}

@@ -8,3 +8,4 @@ pomelo! {
  //~^ ERROR This rule has a typed LHS but no code to assign it
 }
 
+fn main() {}

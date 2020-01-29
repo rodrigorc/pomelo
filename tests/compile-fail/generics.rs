@@ -23,3 +23,4 @@ pomelo! {
     input ::=;
 }
 
+fn main() {}

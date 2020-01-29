@@ -7,3 +7,4 @@ pomelo! {
      //~^ ERROR This rule cannot be reduced
 }
 
+fn main() {}

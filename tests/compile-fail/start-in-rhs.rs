@@ -8,3 +8,4 @@ pomelo! {
      //~^ ERROR start symbol on the RHS of a rule
 }
 
+fn main() {}

@@ -22,3 +22,4 @@ pomelo! {
                //~^ ERROR The precedence symbol must be a token
 }
 
+fn main() {}

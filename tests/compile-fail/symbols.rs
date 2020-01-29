@@ -20,3 +20,5 @@ pomelo! {
        //~^ ERROR Precedence cannot be assigned to a non-terminal
     input ::=;
 }
+
+fn main() {}
