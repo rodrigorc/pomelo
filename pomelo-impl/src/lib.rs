@@ -219,7 +219,7 @@ impl Parse for Decl {
             } else if lookahead.peek(kw::stack_size) {
                 // %stack_size limit [type];
                 input.parse::<kw::stack_size>()?;
-                let limit = input.parse::<LitInt>()?.value() as usize;
+                let limit = input.parse::<LitInt>()?.base10_parse::<usize>()?;
                 let typ = if input.peek(Token![;]) {
                     None
                 } else {

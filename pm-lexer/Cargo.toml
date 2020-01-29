@@ -8,5 +8,5 @@ description = "This is a sample lexer using the proc-macro crate, to be used in 
 repository = "https://github.com/rodrigorc/pomelo"
 
 [dependencies]
-quote = "0.6"
-proc-macro2 = "0.4"
+quote = "1.0"
+proc-macro2 = "1.0"
