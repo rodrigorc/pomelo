@@ -29,7 +29,7 @@ impl<T> VecRef<T> {
 }
 
 
-#[derive(Debug, Hash)]
+#[derive(Debug)]
 pub struct VecRefId<T> {
     id: usize,
     _pd: std::marker::PhantomData<T>,
@@ -53,6 +53,12 @@ impl<T> PartialEq for VecRefId<T> {
 }
 
 impl<T> Eq for VecRefId<T> {
+}
+
+impl<T> std::hash::Hash for VecRefId<T> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h)
+    }
 }
 
 impl<T> VecRefId<T> {

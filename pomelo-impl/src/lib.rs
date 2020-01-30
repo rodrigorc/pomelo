@@ -26,9 +26,9 @@ pub fn pomelo_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 fn pomelo_impl2(decls: Vec<Decl>) -> syn::Result<proc_macro::TokenStream> {
-    let mut lemon = parser::Lemon::new_from_decls(decls)?;
-    let expanded = lemon.build()?;
-    let name = lemon.module_name();
+    let mut pomelo = parser::Pomelo::new_from_decls(decls)?;
+    let expanded = pomelo.build()?;
+    let name = pomelo.module_name();
     let x = quote!{
         mod #name {
             #expanded
