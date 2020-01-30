@@ -768,7 +768,7 @@ impl Pomelo {
                             }
                             NonTerminal{ first_set: s2_first_set, lambda: b2_lambda, .. } => {
                                 let n1 = s1_first_set.len();
-                                s1_first_set.extend(s2_first_set.iter().cloned());
+                                s1_first_set.extend(s2_first_set);
                                 progress |= s1_first_set.len() > n1;
                                 if !b2_lambda { break }
                             }
@@ -833,7 +833,7 @@ impl Pomelo {
                 let bstp = self.the_states.get(stp);
                 for (x, y) in bp.into_iter().zip(&bstp.basis) {
                     let mut y = self.the_configs.get_mut(y);
-                    y.bplp.extend(self.the_configs.get(x).bplp.iter().cloned());
+                    y.bplp.extend(&self.the_configs.get(x).bplp);
                 }
                 Ok(stp)
             }
@@ -982,7 +982,7 @@ impl Pomelo {
                     for plp in &fplp {
                         let mut plp = self.the_configs.get_mut(plp);
                         let n = plp.fws.len();
-                        plp.fws.extend(fws.iter().cloned());
+                        plp.fws.extend(&fws);
                         if plp.fws.len() > n {
                             plp.status = CfgStatus::Incomplete;
                             progress = true;
@@ -1435,7 +1435,7 @@ impl Pomelo {
                                 }
                                 NonTerminal{ first_set, lambda, ..} => {
                                     let mut newcfp = self.the_configs.get_mut(newcfp);
-                                    newcfp.fws.extend(first_set.iter().cloned());
+                                    newcfp.fws.extend(first_set);
                                     if !lambda {
                                         broken = true;
                                         break;
