@@ -1,5 +1,4 @@
 use std::collections::{BTreeSet, HashMap};
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt::{Display, Write};
@@ -11,8 +10,8 @@ use syn::{Ident, Type, Item, ItemEnum, ItemStruct, Block, Pat, Fields, Variant, 
 use quote::ToTokens;
 use crate::decl::*;
 
-mod wrc;
-use wrc::{RCell, WRCell};
+mod vecref;
+use vecref::*;
 
 type RuleSet = BTreeSet<usize>;
 
@@ -26,7 +25,7 @@ enum NewSymbolType {
 struct Precedence(i32, Associativity);
 
 fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
-	match a.0.cmp(&b.0) {
+    match a.0.cmp(&b.0) {
         Ordering::Equal => {
             match a.1 {
                 Associativity::Left => Ordering::Less,
@@ -35,30 +34,32 @@ fn precedence_cmp(a: &Precedence, b: &Precedence) -> Ordering {
             }
         }
         o => o
-	}
+    }
 }
 
-type RcSymbol = RCell<Symbol>;
-type WSymbol = WRCell<Symbol>;
+type SymbolId = VecRefId<Symbol>;
+type StateId = VecRefId<State>;
+type RuleId = VecRefId<Rule>;
+type ConfigId = VecRefId<Config>;
 
 //Symbols do not have a single point of definition, instead they can appear in many places,
 //thus, its Span is not in struct Symbol, but in some selected references, those created directly
 //in the Rule
 #[derive(Debug, Clone)]
-struct WSymbolSpan(WSymbol, Span);
+struct SymbolSpan(SymbolId, Span);
 
 //In RHS of a rule, we have symbols, spans and possibly alias
 #[derive(Debug, Clone)]
-struct WSymbolAlias(WSymbol, Span, Option<Pat>);
+struct SymbolAlias(SymbolId, Span, Option<Pat>);
 
 #[derive(Debug)]
 struct Rule {
     span: Span,
-    lhs: WSymbolSpan,  //Left-hand side of the rule
+    lhs: SymbolSpan,  //Left-hand side of the rule
     lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<WSymbolAlias>,   //RHS symbols and aliases
+    rhs: Vec<SymbolAlias>,   //RHS symbols and aliases
     code: Option<Block>,//The code executed when this rule is reduced
-    prec_sym: Option<WSymbol>, //Precedence symbol for this rule
+    prec_sym: Option<SymbolId>, //Precedence symbol for this rule
     precedence: Option<Precedence>, //Actual precedence for this rule
     index: usize,         //An index number for this rule
     can_reduce: bool,   //True if this rule is ever reduced
@@ -68,11 +69,11 @@ struct Rule {
 enum SymbolType {
     Terminal,
     NonTerminal {
-        rules: Vec<WRCell<Rule>>, //List of rules, if a NonTerminal
+        rules: Vec<RuleId>, //List of rules, if a NonTerminal
         first_set: RuleSet,             //First-set for all rules of this symbol
         lambda: bool,                   //True if NonTerminal and can generate an empty string
     },
-    MultiTerminal(Vec<WSymbol>), //constituent symbols if MultiTerminal
+    MultiTerminal(Vec<SymbolId>), //constituent symbols if MultiTerminal
 }
 use SymbolType::*;
 
@@ -81,7 +82,7 @@ struct Symbol {
     name: String,               //Name of the symbol
     index: usize,               //Index number for this symbol
     typ: SymbolType,            //Either Terminal or NonTerminal
-    fallback: Option<WSymbol>, //Fallback token in case this token desn't parse
+    fallback: Option<SymbolId>, //Fallback token in case this token desn't parse
     precedence: Option<Precedence>,  //Precedence
     use_cnt: i32,               //Number of times used
     data_type: Option<Type>,    //Data type held by this object
@@ -91,8 +92,14 @@ struct Symbol {
 impl Symbol {
     fn is_lambda(&self) -> bool {
         match self.typ {
-            NonTerminal{lambda, ..} => lambda,
+            NonTerminal { lambda, .. } => lambda,
             _ => false
+        }
+    }
+    fn get_non_terminal_rules(&self) -> Option<&[RuleId]> {
+        match &self.typ {
+            NonTerminal { rules, .. } => Some(rules),
+            _ => None
         }
     }
 }
@@ -116,50 +123,47 @@ enum CfgStatus {
 
 #[derive(Debug)]
 struct Config {
-    rule: WRCell<Rule>,   //The rule upon which the configuration is based
+    rule: RuleId,   //The rule upon which the configuration is based
     dot: usize,           //The parse point
     fws: RuleSet,       //Follow-set for this configuration only
-    fplp: WeakConfigList,  //Follow-set forward propagation links
-    bplp: WeakConfigList,  //Follow-set backwards propagation links
+    fplp: Vec<ConfigId>,  //Follow-set forward propagation links
+    bplp: Vec<ConfigId>,  //Follow-set backwards propagation links
     status: CfgStatus,  //Used during followset and shift computations
 }
 
-fn config_cmp_key(a: &RCell<Config>, index: usize, dot: usize) -> Ordering {
-    let adot = a.borrow().dot;
-    let aindex = a.borrow().rule.borrow().index;
+fn config_cmp_key(lemon: &Lemon, a: ConfigId, index: usize, dot: usize) -> Ordering {
+    let adot = lemon.the_configs.get(a).dot;
+    let aindex = lemon.the_rules.get(lemon.the_configs.get(a).rule).index;
     (aindex, adot).cmp(&(index, dot))
 }
 
-fn config_cmp(a: &RCell<Config>, b: &RCell<Config>) -> Ordering {
-    let bdot = b.borrow().dot;
-    let bindex = b.borrow().rule.borrow().index;
-    config_cmp_key(a, bindex, bdot)
+fn config_cmp(lemon: &Lemon, a: ConfigId, b: ConfigId) -> Ordering {
+    let bdot = lemon.the_configs.get(b).dot;
+    let bindex = lemon.the_rules.get(lemon.the_configs.get(b).rule).index;
+    config_cmp_key(lemon, a, bindex, bdot)
 }
-
-type ConfigList = Vec<RCell<Config>>;
-type WeakConfigList = Vec<WRCell<Config>>;
 
 #[derive(Debug, Clone)]
 enum ActionDetail {
-    Shift(WRCell<State>),
+    Shift(StateId),
     Accept,
-    Reduce(WRCell<Rule>),
+    Reduce(RuleId),
     Error,
-    SSConflict(WRCell<State>),    //A shift/shift conflict
-    SRConflict(WRCell<Rule>),     //Was a reduce, but part of a conflict
-    RRConflict(WRCell<Rule>),     //Was a reduce, but part of a conflict
-    SHResolved(WRCell<State>),    //Was a shift. Associativity resolved conflict
-    RDResolved(WRCell<Rule>),     //Was reduce. Associativity resolved conflict
+    SSConflict(StateId),    //A shift/shift conflict
+    SRConflict(RuleId),     //Was a reduce, but part of a conflict
+    RRConflict(RuleId),     //Was a reduce, but part of a conflict
+    SHResolved(StateId),    //Was a shift. Associativity resolved conflict
+    RDResolved(RuleId),     //Was reduce. Associativity resolved conflict
     NotUsed                             //Deleted by compression
 }
 
 impl ActionDetail {
-    fn cmp(a: &ActionDetail, b: &ActionDetail) -> Ordering {
+    fn cmp(lemon: &Lemon, a: &ActionDetail, b: &ActionDetail) -> Ordering {
         use ActionDetail::*;
         match a {
             Shift(sa) => match b {
                 Shift(sb) => {
-                    let rc = sa.borrow().state_num.cmp(&sb.borrow().state_num);
+                    let rc = lemon.the_states.get(sa).state_num.cmp(&lemon.the_states.get(sb).state_num);
                     rc
                 }
                 _ => Ordering::Less,
@@ -173,7 +177,7 @@ impl ActionDetail {
                 Shift(_) => Ordering::Greater,
                 Accept => Ordering::Greater,
                 Reduce(rb) => {
-                    let rc = ra.borrow().index.cmp(&rb.borrow().index);
+                    let rc = lemon.the_rules.get(ra).index.cmp(&lemon.the_rules.get(rb).index);
                     rc
                 }
                 _ => Ordering::Less,
@@ -188,35 +192,39 @@ impl ActionDetail {
 //Every shift or reduce operation is stored as one of the following
 #[derive(Debug)]
 struct Action {
-  look_ahead: WSymbol,           //The look-ahead symbol
+  look_ahead: SymbolId,           //The look-ahead symbol
   detail: ActionDetail,
 }
 
-fn action_cmp(a: &RefCell<Action>, b: &RefCell<Action>) -> Ordering {
+fn action_cmp(lemon: &Lemon, a: &RefCell<Action>, b: &RefCell<Action>) -> Ordering {
     let a = a.borrow();
     let b = b.borrow();
-    let rc = a.look_ahead.borrow().index.cmp(&b.look_ahead.borrow().index);
+    let rc = lemon.the_symbols.get(a.look_ahead).index.cmp(&lemon.the_symbols.get(b.look_ahead).index);
     match rc {
-        Ordering::Equal => ActionDetail::cmp(&a.detail, &b.detail),
+        Ordering::Equal => ActionDetail::cmp(lemon, &a.detail, &b.detail),
         rc => rc,
     }
 }
 
 #[derive(Debug)]
 struct State {
-    configs: ConfigList, //All configurations in this set
-    basis: WeakConfigList, //The basis configuration for this state
-    state_num: usize,     //Sequential number for this state
+    configs: Vec<ConfigId>,  //All configurations in this set
+    basis: Vec<ConfigId>,    //The basis configuration for this state
+    state_num: usize,        //Sequential number for this state
     actions: Vec<RefCell<Action>>,    //Array of actions for this state
-    n_tkn_act: i32,     //number of actions on terminals and non-terminals
+    n_tkn_act: i32,          //number of actions on terminals and non-terminals
     n_nt_act: i32,
-    i_tkn_ofst: Option<i32>,    //yy_action[] offset for terminals and non-terminals
+    i_tkn_ofst: Option<i32>, //yy_action[] offset for terminals and non-terminals
     i_nt_ofst: Option<i32>,
-    i_dflt: usize,        //Default action
+    i_dflt: usize,           //Default action
 }
 
 #[derive(Debug)]
 pub struct Lemon {
+    the_symbols: VecRef<Symbol>,       //Unsorted array of symbols
+    the_states: VecRef<State>, //Unsorted list of states
+    the_rules: VecRef<Rule>,  //Unsorted list of all rules
+    the_configs: VecRef<Config>, //Unsorted list of configs,
     module: Ident,
     includes: Vec<Item>,
     syntax_error: Option<Block>,
@@ -224,20 +232,20 @@ pub struct Lemon {
     stack_overflow: Option<Block>,
     token_enum: Option<ItemEnum>,   //The enum Token{}, if specified with %token
     parser_struct: Option<ItemStruct>, //The struct Parser{}, if specified with %parser
-    states: Vec<RCell<State>>,      //Table of states sorted by state number
-    rules: Vec<RCell<Rule>>,        //List of all rules
+    states: Vec<StateId>,      //Table of states sorted by state number
+    rules: Vec<RuleId>,             //List of all rules
     default_index: usize,           //The index of the default symbol (always the last one in symbols)
     num_terminals: usize,           //symbols[0..num_terminals] are the terminal symbols
-    symbols: Vec<RcSymbol>,         //Sorted array of symbols
-    error_symbol: WSymbol,          //The error symbol
-    wildcard: Option<WSymbol>,      //The symbol that matches anything
+    symbols: Vec<SymbolId>,         //Sorted array of symbols
+    error_symbol: SymbolId,          //The error symbol
+    wildcard: Option<SymbolId>,      //The symbol that matches anything
     arg: Option<Type>,              //Declaration of the extra argument to parser
     err_type: Option<Type>,         //Declaration of the error type of the parser
     nconflict: i32,                 //Number of parsing conflicts
     has_fallback: bool,             //True if any %fallback is seen in the grammar
     default_type: Option<Type>,     //The %default_type
-    start: Option<WSymbol>,
-    optional_tokens: HashMap<WSymbol, WSymbolSpan>,
+    start: Option<SymbolId>,
+    optional_tokens: HashMap<SymbolId, SymbolSpan>,
     extra_token: Option<Type>,
     stack_type: Option<Type>,
     stack_limit: usize,
@@ -250,7 +258,7 @@ struct ParserData {
 
 #[derive(Debug)]
 struct AxSet {
-    stp: RCell<State>,    // A pointer to a state
+    stp: StateId,    // A pointer to a state
     is_tkn: bool,               // true for tokens, false for non-terminals
     n_action: i32,              // Number of actions
 }
@@ -490,6 +498,10 @@ fn is_nonterminal_ident(id: &Ident) -> bool {
 impl Lemon {
     pub fn new_from_decls(decls: Vec<Decl>) -> syn::Result<Lemon> {
         let mut lem = Lemon {
+            the_symbols: VecRef::new(),
+            the_states: VecRef::new(),
+            the_rules: VecRef::new(),
+            the_configs: VecRef::new(),
             module: parse_quote!(parser),
             includes: Vec::new(),
             syntax_error: None,
@@ -502,7 +514,7 @@ impl Lemon {
             default_index: 0,
             num_terminals: 0,
             symbols: Vec::new(),
-            error_symbol: WSymbol::default(),
+            error_symbol: SymbolId::dangling(), //temporary fake value
             wildcard: None,
             arg: None,
             err_type: None,
@@ -569,8 +581,11 @@ impl Lemon {
         //First there are all the Terminals, the first one is $
         //Then the NonTerminals, the last one is {default}
         //And finally the MultiTerminals
-        //Do not impl Ord, because that requires Eq, that we do not need
-        self.symbols.sort_by(|a, b| {
+        //Do not impl Ord, because that requires Eq, that we do not need.
+        //
+        //We have to take 'symbols' out of self to be able to borrow self in the callback.
+        let mut symbols = std::mem::take(&mut self.symbols);
+        symbols.sort_by(|a, b| {
             fn symbol_ord(s: &SymbolType) -> i32 {
                 match s {
                     Terminal => 0,
@@ -578,31 +593,34 @@ impl Lemon {
                     MultiTerminal(_) => 2,
                 }
             }
-            let a = symbol_ord(&a.borrow().typ);
-            let b = symbol_ord(&b.borrow().typ);
+            let a = symbol_ord(&self.the_symbols.get(a).typ);
+            let b = symbol_ord(&self.the_symbols.get(b).typ);
             a.cmp(&b)
         });
 
         let mut last_terminal = 0;
         let mut default_index = 0;
-        for (i,s) in self.symbols.iter().enumerate() {
-            s.borrow_mut().index = i;
-            match s.borrow().typ {
+        for (i,s) in symbols.iter().enumerate() {
+            self.the_symbols.get_mut(s).index = i;
+            match self.the_symbols.get(s).typ {
                 Terminal => last_terminal = i,
                 NonTerminal {..} => default_index = i,
                 _ => (),
             }
         }
+
+        self.symbols = symbols;
         self.num_terminals = last_terminal + 1;
         self.default_index = default_index;
 
         //Default start symbol is the LHS of the first rule
         if self.start.is_none() {
-            self.start = Some(self.rules.first().unwrap().borrow().lhs.0.clone());
+            let start = self.the_rules.get(self.rules.first().unwrap()).lhs.0;
+            self.start = Some(start);
         }
         if let Some(extra_token) = &self.extra_token {
             for i in 1 .. self.num_terminals {
-                let mut s = self.symbols[i].borrow_mut();
+                let mut s = self.the_symbols.get_mut(self.symbols[i]);
                 s.data_type = match s.data_type.take() {
                     None => Some(extra_token.clone()),
                     Some(dt) => Some(parse_quote!((#extra_token, #dt)))
@@ -616,14 +634,14 @@ impl Lemon {
         //  _n ::= T(_A) { Some(_A) }
         //We consume the optional_tokens map, it is no longer needed
         let optional_tokens = std::mem::replace(&mut self.optional_tokens, Default::default());
-        for (sym_r, WSymbolSpan(sym_l, span)) in optional_tokens {
-            let dt = sym_r.borrow().data_type.clone().unwrap_or(parse_quote!(()));
-            sym_l.borrow_mut().data_type = Some(parse_quote!(Option<#dt>));
-            let sym_l = WSymbolSpan(sym_l, span);
+        for (sym_r, SymbolSpan(sym_l, span)) in optional_tokens {
+            let dt = self.the_symbols.get(sym_r).data_type.clone().unwrap_or(parse_quote!(()));
+            self.the_symbols.get_mut(sym_l).data_type = Some(parse_quote!(Option<#dt>));
+            let sym_l = SymbolSpan(sym_l, span);
 
             self.create_rule(span, sym_l.clone(), vec![], Some(parse_quote!({ None })), None);
 
-            let rhs = WSymbolAlias(sym_r, span, Some(parse_quote!(_A)));
+            let rhs = SymbolAlias(sym_r, span, Some(parse_quote!(_A)));
             self.create_rule(span, sym_l, vec![rhs], Some(parse_quote!({ Some(_A) })), None);
         }
     }
@@ -639,16 +657,16 @@ impl Lemon {
      */
     fn find_rule_precedences(&mut self) {
         for rp in &self.rules {
-            let mut rp = rp.borrow_mut();
+            let mut rp = self.the_rules.get_mut(rp);
             if let Some(ps) = &rp.prec_sym {
-                rp.precedence = ps.borrow().precedence;
+                rp.precedence = self.the_symbols.get(ps).precedence;
                 continue;
             }
-            for WSymbolAlias(sp, ..) in &rp.rhs {
-                let b = sp.borrow();
+            for SymbolAlias(sp, ..) in &rp.rhs {
+                let b = self.the_symbols.get(sp);
                 match &b.typ {
                     MultiTerminal(sub_sym) => {
-                        if let Some(prec) = sub_sym.into_iter().find_map(|msp| msp.borrow().precedence) {
+                        if let Some(prec) = sub_sym.into_iter().find_map(|msp| self.the_symbols.get(msp).precedence) {
                             rp.prec_sym = Some(sp.clone());
                             rp.precedence = Some(prec);
                             break;
@@ -673,12 +691,19 @@ impl Lemon {
     // * the type of that symbol is the same as the type of the RHS
     fn normalize_rules(&mut self) -> syn::Result<()> {
         for rp in &self.rules {
-            let mut rp = rp.borrow_mut();
-            if rp.lhs.0.borrow().data_type.is_some() && rp.code.is_none() {
-                if rp.rhs.iter().all(|WSymbolAlias(_, _, a)| a.is_none()) {
-                    let mut rtyped = rp.rhs.iter_mut().filter(|WSymbolAlias(symbol, _, _)| symbol.borrow().data_type.is_some()).collect::<Vec<_>>();
+            let mut rp = self.the_rules.get_mut(rp);
+            if self.the_symbols.get(rp.lhs.0).data_type.is_some() && rp.code.is_none() {
+                if rp.rhs.iter().all(|SymbolAlias(_, _, a)| a.is_none()) {
+                    let mut rtyped = rp
+                        .rhs
+                        .iter_mut()
+                        .filter(|SymbolAlias(symbol, _, _)|
+                                self.the_symbols.get(symbol)
+                                    .data_type
+                                    .is_some())
+                        .collect::<Vec<_>>();
                     match &mut rtyped[..] {
-                        [WSymbolAlias(_, _, alias)] => {
+                        [SymbolAlias(_, _, alias)] => {
                             *alias = Some(parse_quote!(_A));
                             rp.code = Some(parse_quote!({_A}));
                             continue;
@@ -702,20 +727,20 @@ impl Lemon {
         loop {
             let mut progress = false;
             for rp in &self.rules {
-                let rp = rp.borrow();
-                let lhs = &rp.lhs.0;
-                if lhs.borrow().is_lambda() { continue }
+                let rp = self.the_rules.get(rp);
+                let lhs = rp.lhs.0;
+                if self.the_symbols.get(lhs).is_lambda() { continue }
 
                 let mut all_lambda = true;
-                for WSymbolAlias(sp, ..) in &rp.rhs {
-                    let sp = sp.borrow();
+                for SymbolAlias(sp, ..) in &rp.rhs {
+                    let sp = self.the_symbols.get(sp);
                     if !sp.is_lambda() {
                         all_lambda = false;
                         break;
                     }
                 }
                 if all_lambda {
-                    if let NonTerminal{lambda, ..} = &mut lhs.borrow_mut().typ {
+                    if let NonTerminal{lambda, ..} = &mut self.the_symbols.get_mut(lhs).typ {
                         *lambda = true;
                         progress = true;
                     } else {
@@ -730,17 +755,16 @@ impl Lemon {
             let mut progress = false;
 
             for rp in &self.rules {
-                let rp = rp.borrow();
+                let rp = self.the_rules.get(rp);
                 let s1 = &rp.lhs.0;
-                for WSymbolAlias(s2, ..) in &rp.rhs {
+                for SymbolAlias(s2, ..) in &rp.rhs {
                     //First check if s1 and s2 are the same, or else s1.borrow_mut() will panic
                     if s1 == s2 {
-                        if !s1.borrow().is_lambda() { break }
+                        if !self.the_symbols.get(s1).is_lambda() { break }
                         continue;
                     }
-
-                    let b2 = s2.borrow();
-                    if let NonTerminal{ first_set: s1_first_set, .. } = &mut s1.borrow_mut().typ {
+                    let b2 = self.the_symbols.get(s2);
+                    if let NonTerminal{ first_set: s1_first_set, .. } = &mut self.the_symbols.get_mut(s1).typ {
                         match &b2.typ {
                             Terminal => {
                                 progress |= s1_first_set.insert(b2.index);
@@ -748,13 +772,13 @@ impl Lemon {
                             }
                             MultiTerminal(sub_sym) => {
                                 for ss in sub_sym {
-                                    progress |= s1_first_set.insert(ss.borrow().index);
+                                    progress |= s1_first_set.insert(self.the_symbols.get(ss).index);
                                 }
                                 break;
                             }
                             NonTerminal{ first_set: s2_first_set, lambda: b2_lambda, .. } => {
                                 let n1 = s1_first_set.len();
-                                s1_first_set.append(&mut s2_first_set.clone());
+                                s1_first_set.extend(s2_first_set.iter().cloned());
                                 progress |= s1_first_set.len() > n1;
                                 if !b2_lambda { break }
                             }
@@ -778,25 +802,26 @@ impl Lemon {
          ** any rule.  Report an error if it does.  (YACC would generate a new
          ** start symbol in this case.) */
         for rp in &self.rules {
-            let rp = rp.borrow_mut();
-            for WSymbolAlias(r, span, ..) in &rp.rhs {
+            let rp = self.the_rules.get_mut(rp);
+            for SymbolAlias(r, span, ..) in &rp.rhs {
                 if sp == r {
                     return error_span(*span, "start symbol on the RHS of a rule"); //tested
                 }
             }
         }
 
-        let mut basis = ConfigList::new();
+        let mut basis = Vec::new();
 
         /* The basis configuration set for the first state
          ** is all rules which have the start symbol as their
          ** left-hand side */
-        if let NonTerminal{rules, ..} = &sp.borrow().typ {
+        let rules = self.the_symbols.get(sp).get_non_terminal_rules().map(|s| s.to_owned());
+        if let Some(rules) = rules { 
             for rp in rules {
-                rp.borrow_mut().lhs_start = true;
+                self.the_rules.get_mut(rp).lhs_start = true;
 
-                let cfg = Lemon::add_config(&mut basis, rp.clone(), 0);
-                cfg.borrow_mut().fws.insert(0);
+                let cfg = self.add_config(&mut basis, rp.clone(), 0);
+                self.the_configs.get_mut(cfg).fws.insert(0);
             }
         }
         self.get_state(basis.clone(), basis)?;
@@ -807,28 +832,28 @@ impl Lemon {
     /* Compute the first state.  All other states will be
      ** computed automatically during the computation of the first one.
      ** The returned pointer to the first state is not used. */
-    fn get_state(&mut self, mut bp: ConfigList, cur: ConfigList) -> syn::Result<RCell<State>> {
-        bp.sort_by(config_cmp);
+    fn get_state(&mut self, mut bp: Vec<ConfigId>, cur: Vec<ConfigId>) -> syn::Result<StateId> {
+        bp.sort_by(|a, b| config_cmp(self, *a, *b));
         /* Get a state with the same basis */
         match self.state_find(&bp) {
             Some(stp) => {
                 /* A state with the same basis already exists!  Copy all the follow-set
                  ** propagation links from the state under construction into the
                  ** preexisting state, then return a pointer to the preexisting state */
-                let bstp = stp.borrow();
+                let bstp = self.the_states.get(stp);
                 for (x, y) in bp.into_iter().zip(&bstp.basis) {
-                    let mut y = y.borrow_mut();
-                    y.bplp.extend(x.borrow_mut().bplp.iter().map(|x| x.clone()));
+                    let mut y = self.the_configs.get_mut(y);
+                    y.bplp.extend(self.the_configs.get(x).bplp.iter().cloned());
                 }
-                Ok(stp.clone())
+                Ok(stp)
             }
             None => {
                 /* This really is a new state. Construct all the details */
                 let mut configs = self.configlist_closure(cur)?;
-                configs.sort_by(config_cmp);
-                let stp = Rc::new(RefCell::new(State {
+                configs.sort_by(|a, b| config_cmp(self, *a, *b));
+                let stp = State {
                     configs,
-                    basis: bp.iter().map(WRCell::from).collect(),
+                    basis: bp.clone(),
                     state_num: self.states.len(),
                     actions: Vec::new(),
                     n_tkn_act: 0,
@@ -836,47 +861,55 @@ impl Lemon {
                     i_tkn_ofst: None,
                     i_nt_ofst: None,
                     i_dflt: 0,
-                }));
-                self.states.push(stp.clone());
-                self.build_shifts(&stp)?;
-                Ok(stp)
+                };
+                let id = self.the_states.push(stp);
+                self.states.push(id);
+                self.build_shifts(id)?;
+                Ok(id)
             }
         }
     }
     /* Construct all successor states to the given state.  A "successor"
      ** state is any state which can be reached by a shift action.
      */
-    fn build_shifts(&mut self, state: &RCell<State>) -> syn::Result<()> {
+    fn build_shifts(&mut self, state: StateId) -> syn::Result<()> {
         /* Each configuration becomes complete after it contibutes to a successor
          ** state.  Initially, all configurations are incomplete */
 
-        for cfp in &state.borrow().configs {
-            cfp.borrow_mut().status = CfgStatus::Incomplete;
+        for cfp in &self.the_states.get(state).configs {
+            self.the_configs.get_mut(cfp).status = CfgStatus::Incomplete;
         }
         let mut aps = Vec::new();
         /* Loop through all configurations of the state "stp" */
-        for (icfp, cfp) in state.borrow().configs.iter().enumerate() {
-            let cfp = cfp.borrow();
+        let configs = self.the_states.get(state).configs.clone();
+        for (icfp, cfp) in configs.iter().enumerate() {
+            let cfp = self.the_configs.get(cfp);
             if let CfgStatus::Complete = cfp.status { continue }/* Already used by inner loop */
-            if cfp.dot >= cfp.rule.borrow().rhs.len() { continue }  /* Can't shift this config */
-            let WSymbolAlias(sp, ..) = &cfp.rule.borrow().rhs[cfp.dot];       /* Symbol after the dot */
-            let mut basis = ConfigList::new();
+            if cfp.dot >= self.the_rules.get(cfp.rule).rhs.len() { continue }  /* Can't shift this config */
+            let SymbolAlias(sp, ..) = self.the_rules.get(cfp.rule).rhs[cfp.dot];       /* Symbol after the dot */
+            let mut basis = Vec::new();
             drop(cfp);
 
             /* For every configuration in the state "stp" which has the symbol "sp"
              ** following its dot, add the same configuration to the basis set under
              ** construction but with the dot shifted one symbol to the right. */
-            for bcfp_ in &state.borrow().configs[icfp..] {
-                let bcfp = bcfp_.borrow();
-                if let CfgStatus::Complete = bcfp.status { continue }   /* Already used */
-                if bcfp.dot >= bcfp.rule.borrow().rhs.len() { continue }    /* Can't shift this one */
-                let WSymbolAlias(bsp, ..) = &bcfp.rule.borrow().rhs[bcfp.dot];        /* Get symbol after dot */
-                if *bsp != *sp { continue }                     /* Must be same as for "cfp" */
-                let newcfg = Lemon::add_config(&mut basis, bcfp.rule.clone(), bcfp.dot + 1);
-                drop(bcfp);
+            let state_configs = self.the_states.get(state).configs[icfp..].to_owned();
+            for bcfp_ in state_configs {
+                let rule;
+                let dot;
+                {
+                    let bcfp = self.the_configs.get(bcfp_);
+                    if let CfgStatus::Complete = bcfp.status { continue }   /* Already used */
+                    if bcfp.dot >= self.the_rules.get(bcfp.rule).rhs.len() { continue }    /* Can't shift this one */
+                    let SymbolAlias(bsp, ..) = self.the_rules.get(bcfp.rule).rhs[bcfp.dot];        /* Get symbol after dot */
+                    if bsp != sp { continue }                     /* Must be same as for "cfp" */
+                    rule = bcfp.rule;
+                    dot = bcfp.dot + 1;
+                }
+                let newcfg = self.add_config(&mut basis, rule, dot);
 
-                bcfp_.borrow_mut().status = CfgStatus::Complete;                      /* Mark this config as used */
-                newcfg.borrow_mut().bplp.push(bcfp_.into());
+                self.the_configs.get_mut(bcfp_).status = CfgStatus::Complete;                      /* Mark this config as used */
+                self.the_configs.get_mut(newcfg).bplp.push(bcfp_);
             }
 
             /* Get a pointer to the state described by the basis configuration set
@@ -885,11 +918,11 @@ impl Lemon {
 
             /* The state "newstp" is reached from the state "stp" by a shift action
              ** on the symbol "sp" */
-            let bsp = sp.borrow();
+            let bsp = self.the_symbols.get(sp);
             match &bsp.typ {
                 MultiTerminal(sub_sym) => {
                     for ss in sub_sym {
-                        let detail = ActionDetail::Shift((&newstp).into());
+                        let detail = ActionDetail::Shift(newstp);
                         aps.push(RefCell::new(Action {
                             look_ahead: ss.clone(),
                             detail
@@ -897,7 +930,7 @@ impl Lemon {
                     }
                 }
                 _ => {
-                    let detail = ActionDetail::Shift((&newstp).into());
+                    let detail = ActionDetail::Shift(newstp);
                     aps.push(RefCell::new(Action {
                         look_ahead: sp.clone(),
                         detail
@@ -905,7 +938,7 @@ impl Lemon {
                 }
             }
         }
-        state.borrow_mut().actions.extend(aps);
+        self.the_states.get_mut(state).actions.extend(aps);
 
         Ok(())
     }
@@ -924,9 +957,9 @@ impl Lemon {
         /* Convert all backlinks into forward links.  Only the forward
          ** links are used in the follow-set computation. */
         for stp in &self.states {
-            for cfp in &stp.borrow().configs {
-                for plp in &cfp.borrow().bplp {
-                    plp.borrow_mut().fplp.push(cfp.into());
+            for cfp in &self.the_states.get(stp).configs {
+                for plp in &self.the_configs.get(cfp).bplp {
+                    self.the_configs.get_mut(plp).fplp.push(*cfp);
                 }
             }
         }
@@ -939,8 +972,8 @@ impl Lemon {
      */
     fn find_follow_sets(&mut self) {
         for stp in &self.states {
-            for cfp in &stp.borrow().configs {
-                cfp.borrow_mut().status = CfgStatus::Incomplete;
+            for cfp in &self.the_states.get(stp).configs {
+                self.the_configs.get_mut(cfp).status = CfgStatus::Incomplete;
             }
         }
 
@@ -948,24 +981,24 @@ impl Lemon {
         while progress {
             progress = false;
             for stp in &self.states {
-                for cfp in &stp.borrow().configs {
+                for cfp in &self.the_states.get(stp).configs {
                     let (fws, fplp) = {
-                        let cfp = cfp.borrow();
+                        let cfp = self.the_configs.get(cfp);
                         if let CfgStatus::Complete = cfp.status {
                             continue;
                         }
                         (cfp.fws.clone(), cfp.fplp.clone())
                     };
                     for plp in &fplp {
-                        let mut plp = plp.borrow_mut();
+                        let mut plp = self.the_configs.get_mut(plp);
                         let n = plp.fws.len();
-                        plp.fws.append(&mut fws.clone());
+                        plp.fws.extend(fws.iter().cloned());
                         if plp.fws.len() > n {
                             plp.status = CfgStatus::Incomplete;
                             progress = true;
                         }
                     }
-                    cfp.borrow_mut().status = CfgStatus::Complete;
+                    self.the_configs.get_mut(cfp).status = CfgStatus::Complete;
                 }
             }
         }
@@ -980,17 +1013,17 @@ impl Lemon {
          */
         for stp in &self.states {
             let mut aps = Vec::new();
-            let mut stp = stp.borrow_mut();
+            let mut stp = self.the_states.get_mut(stp);
             for cfp in &stp.configs {
-                let cfp = cfp.borrow_mut();
-                if cfp.dot == cfp.rule.borrow().rhs.len() { /* Is dot at extreme right? */
+                let cfp = self.the_configs.get(cfp);
+                if cfp.dot == self.the_rules.get(cfp.rule).rhs.len() { /* Is dot at extreme right? */
                     for j in 0 .. self.num_terminals {
                         if cfp.fws.contains(&j) {
                             /* Add a reduce action to the state "stp" which will reduce by the
                              ** rule "cfp->rp" if the lookahead symbol is "lemp->symbols[j]" */
-                            let detail = ActionDetail::Reduce(cfp.rule.clone());
+                            let detail = ActionDetail::Reduce(cfp.rule);
                             aps.push(RefCell::new(Action {
-                                look_ahead: (&self.symbols[j]).into(),
+                                look_ahead: self.symbols[j],
                                 detail
                             }));
                         }
@@ -1006,15 +1039,16 @@ impl Lemon {
         /* Add to the first state (which is always the starting state of the
          ** finite state machine) an action to ACCEPT if the lookahead is the
          ** start nonterminal.  */
-        self.states.first().unwrap().borrow_mut().actions.push(RefCell::new(Action {
+        self.the_states.get_mut(self.states.first().unwrap()).actions.push(RefCell::new(Action {
             look_ahead: sp,
             detail: ActionDetail::Accept,
         }));
 
         /* Resolve conflicts */
+        let mut nconflict = 0;
         for stp in &self.states {
-            stp.borrow_mut().actions.sort_by(action_cmp);
-            let stp = stp.borrow();
+            self.the_states.get_mut(stp).actions.sort_by(|a, b| action_cmp(self, a, b));
+            let stp = self.the_states.get(stp);
             let len = stp.actions.len();
             for i in 0 .. len {
                 let ap = &stp.actions[i];
@@ -1023,26 +1057,27 @@ impl Lemon {
                     if ap.borrow().look_ahead == nap.borrow().look_ahead {
                         /* The two actions "ap" and "nap" have the same lookahead.
                          ** Figure out which one should be used */
-                        self.nconflict += if Lemon::resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut()) { 1 } else { 0 };
+                        nconflict += if self.resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut()) { 1 } else { 0 };
                     } else {
                         break;
                     }
                 }
             }
         }
+        self.nconflict += nconflict;
 
 
         /* Report an error for each rule that can never be reduced. */
         for stp in &self.states {
-            for a in &stp.borrow().actions {
+            for a in &self.the_states.get(stp).actions {
                 let a = a.borrow();
                 if let ActionDetail::Reduce(x) = &a.detail {
-                    x.borrow_mut().can_reduce = true;
+                    self.the_rules.get_mut(x).can_reduce = true;
                 }
             }
         }
         for rp in &self.rules {
-            let rp = rp.borrow();
+            let rp = self.the_rules.get(rp);
             if !rp.can_reduce {
                 return error_span(rp.span, "This rule cannot be reduced"); //tested
             }
@@ -1063,7 +1098,7 @@ impl Lemon {
      ** If either action is a SHIFT, then it must be apx.  This
      ** function won't work if apx->type==REDUCE and apy->type==SHIFT.
      */
-    fn resolve_conflict(apx: &mut Action, apy: &mut Action) -> bool {
+    fn resolve_conflict(&self, apx: &mut Action, apy: &mut Action) -> bool {
         use ActionDetail::*;
         let (err, ax, ay) = match (apx.detail.clone(), apy.detail.clone()) {
             (Shift(x), Shift(y)) => {
@@ -1071,8 +1106,8 @@ impl Lemon {
             }
             /* Use operator associativity to break tie */
             (Shift(x), Reduce(y)) => {
-                let precx = apx.look_ahead.borrow().precedence;
-                let precy = y.borrow().precedence;
+                let precx = self.the_symbols.get(apx.look_ahead).precedence;
+                let precy = self.the_rules.get(y).precedence;
 
                 match (precx, precy) {
                     (Some(px), Some(py)) => {
@@ -1086,8 +1121,8 @@ impl Lemon {
                 }
             }
             (Reduce(x), Reduce(y)) => {
-                let precx = x.borrow().precedence;
-                let precy = y.borrow().precedence;
+                let precx = self.the_rules.get(x).precedence;
+                let precy = self.the_rules.get(y).precedence;
 
                 match (precx, precy) {
                     (Some(px), Some(py)) => {
@@ -1127,7 +1162,7 @@ impl Lemon {
                 let mut nbest = 0;
                 let mut rbest = None;
                 let mut uses_wildcard = false;
-                let stp = stp.borrow();
+                let stp = self.the_states.get(stp);
                 for (iap, ap) in stp.actions.iter().enumerate() {
                     let ap = ap.borrow();
                     match (&ap.detail, &self.wildcard) {
@@ -1137,7 +1172,7 @@ impl Lemon {
                             }
                         }
                         (Reduce(rp), _) => {
-                            if rp.borrow().lhs_start { continue }
+                            if self.the_rules.get(rp).lhs_start { continue }
                             if rbest.as_ref() == Some(rp) { continue }
                             let mut n = 1;
                             for ap2 in &stp.actions[iap + 1..] {
@@ -1184,7 +1219,7 @@ impl Lemon {
                     }
                 }
                 if let Some((iap, ap)) = apbest {
-                    ap.borrow_mut().look_ahead = (&def_symbol).into();
+                    ap.borrow_mut().look_ahead = def_symbol;
                     for ap2 in &stp.actions[iap + 1..] {
                         let mut ap2 = ap2.borrow_mut();
                         let unuse = match &ap2.detail {
@@ -1199,7 +1234,7 @@ impl Lemon {
                     }
                 }
             }
-            stp.borrow_mut().actions.sort_by(action_cmp);
+            self.the_states.get_mut(stp).actions.sort_by(|a, b| action_cmp(self, a, b));
         }
     }
 
@@ -1214,11 +1249,11 @@ impl Lemon {
             let mut n_nt_act = 0;
             let mut i_dflt = self.states.len() + self.rules.len();
 
-            for ap in &stp.borrow().actions {
+            for ap in &self.the_states.get(stp).actions {
                 let ap = ap.borrow();
                 match self.compute_action(&ap) {
                     Some(x) => {
-                        let index = ap.look_ahead.borrow().index;
+                        let index = self.the_symbols.get(ap.look_ahead).index;
                         if index < self.num_terminals {
                             n_tkn_act += 1;
                         } else if index < self.default_index {
@@ -1231,15 +1266,18 @@ impl Lemon {
                 }
             }
 
-            let mut stp = stp.borrow_mut();
+            let mut stp = self.the_states.get_mut(stp);
             stp.n_tkn_act = n_tkn_act;
             stp.n_nt_act = n_nt_act;
             stp.i_dflt = i_dflt;
         }
-        self.states[1..].sort_by(Lemon::state_resort_cmp);
-        for (i, stp) in self.states.iter().enumerate() {
-            stp.borrow_mut().state_num = i;
+        //Take states out of self to be able to use `self` 
+        let mut states = std::mem::take(&mut self.states);
+        states[1..].sort_by(|a, b| self.state_resort_cmp(*a, *b));
+        for (i, stp) in states.iter().enumerate() {
+            self.the_states.get_mut(stp).state_num = i;
         }
+        self.states = states;
     }
 
     /* Given an action, compute the integer value for that action
@@ -1250,11 +1288,11 @@ impl Lemon {
         use ActionDetail::*;
         let act = match &ap.detail {
             Shift(stp) => {
-                let n = stp.borrow().state_num;
+                let n = self.the_states.get(stp).state_num;
                 n
             }
             Reduce(rp) => {
-                let n = rp.borrow().index + self.states.len();
+                let n = self.the_rules.get(rp).index + self.states.len();
                 n
             }
             Error => self.states.len() + self.rules.len(),
@@ -1267,25 +1305,25 @@ impl Lemon {
     fn report_output(&self) -> String {
         let mut state_info = String::new();
         for stp in &self.states {
-            let stp = stp.borrow();
+            let stp = self.the_states.get(stp);
             writeln!(state_info, "State {}:", stp.state_num).unwrap();
             for cfp in &stp.configs {
-                let cfp = cfp.borrow();
-                let rule = cfp.rule.borrow();
+                let cfp = self.the_configs.get(cfp);
+                let rule = self.the_rules.get(cfp.rule);
                 if cfp.dot == rule.rhs.len() {
                     write!(state_info, "    {:>5} ", format!("({})", rule.index)).unwrap();
                 } else {
                     write!(state_info, "          ").unwrap();
                 }
-                write!(state_info, "{} ::=", rule.lhs.0.borrow().name).unwrap();
-                for (i, WSymbolAlias(sp, ..)) in rule.rhs.iter().enumerate() {
+                write!(state_info, "{} ::=", self.the_symbols.get(rule.lhs.0).name).unwrap();
+                for (i, SymbolAlias(sp, ..)) in rule.rhs.iter().enumerate() {
                     if i == cfp.dot {
                         write!(state_info, " *").unwrap();
                     }
-                    let sp = sp.borrow();
+                    let sp = self.the_symbols.get(sp);
                     if let MultiTerminal(sub_sym) = &sp.typ {
                         for (j, ss) in sub_sym.iter().enumerate() {
-                            let ss = ss.borrow();
+                            let ss = self.the_symbols.get(ss);
                             if j == 0 {
                                 write!(state_info, " {}", ss.name).unwrap();
                             } else {
@@ -1305,13 +1343,13 @@ impl Lemon {
             for ap in &stp.actions {
                 let ap = ap.borrow();
                 use ActionDetail::*;
-                let sp = ap.look_ahead.borrow();
+                let sp = self.the_symbols.get(ap.look_ahead);
                 match &ap.detail {
                     Shift(stp) => {
-                        write!(state_info, "{:>30} shift  {}", sp.name, stp.borrow().state_num).unwrap();
+                        write!(state_info, "{:>30} shift  {}", sp.name, self.the_states.get(stp).state_num).unwrap();
                     }
                     Reduce(rp) => {
-                        write!(state_info, "{:>30} reduce {}", sp.name, rp.borrow().index).unwrap();
+                        write!(state_info, "{:>30} reduce {}", sp.name, self.the_rules.get(rp).index).unwrap();
                     }
                     Accept => {
                         write!(state_info, "{:>30} accept", sp.name).unwrap();
@@ -1320,16 +1358,16 @@ impl Lemon {
                         write!(state_info, "{:>30} error", sp.name).unwrap();
                     }
                     SRConflict(rp) | RRConflict(rp) => {
-                        write!(state_info, "{:>30} reduce {:<3} ** Parsing conflict **", sp.name, rp.borrow().index).unwrap();
+                        write!(state_info, "{:>30} reduce {:<3} ** Parsing conflict **", sp.name, self.the_rules.get(rp).index).unwrap();
                     }
                     SSConflict(stp) => {
-                        write!(state_info, "{:>30} shift  {:<3} ** Parsing conflict **", sp.name, stp.borrow().state_num).unwrap();
+                        write!(state_info, "{:>30} shift  {:<3} ** Parsing conflict **", sp.name, self.the_states.get(stp).state_num).unwrap();
                     }
                     SHResolved(stp) => {
-                        write!(state_info, "{:>30} shift  {:<3} -- dropped by precedence", sp.name, stp.borrow().state_num).unwrap();
+                        write!(state_info, "{:>30} shift  {:<3} -- dropped by precedence", sp.name, self.the_states.get(stp).state_num).unwrap();
                     }
                     RDResolved(rp) => {
-                        write!(state_info, "{:>30} reduce {:<3} -- dropped by precedence", sp.name, rp.borrow().index).unwrap();
+                        write!(state_info, "{:>30} reduce {:<3} -- dropped by precedence", sp.name, self.the_rules.get(rp).index).unwrap();
                     }
                     _ => continue,
                 }
@@ -1341,7 +1379,7 @@ impl Lemon {
             writeln!(state_info, "----------------------------------------------------").unwrap();
             writeln!(state_info, "Symbols:").unwrap();
             for (i, sp) in self.symbols.iter().enumerate() {
-                let sp = sp.borrow();
+                let sp = self.the_symbols.get(sp);
                 write!(state_info, "  {:3}: {}", i, sp.name).unwrap();
                 /*
                    if let NonTerminal{first_set, lambda, ..} = &sp.typ {
@@ -1362,63 +1400,64 @@ impl Lemon {
         state_info
     }
 
-    fn state_find(&mut self, bp: &ConfigList) -> Option<RCell<State>> {
+    fn state_find(&mut self, bp: &[ConfigId]) -> Option<StateId> {
         let res = self.states.iter().find(|s| {
-            let sbp = &s.borrow().basis;
+            let sbp = &self.the_states.get(*s).basis;
             if sbp.len() != bp.len() {
                 return false;
             }
             for (a, b) in sbp.iter().zip(bp) {
-                let a = a.borrow();
-                let b = b.borrow();
+                let a = self.the_configs.get(a);
+                let b = self.the_configs.get(b);
                 if a.rule != b.rule || a.dot != b.dot {
                     return false;
                 }
             }
             true
         });
-        res.map(|x| x.clone())
+        res.cloned()
     }
 
     /* Compute the closure of the configuration list */
-    fn configlist_closure(&mut self, mut cur: ConfigList) -> syn::Result<ConfigList> {
+    fn configlist_closure(&mut self, mut cur: Vec<ConfigId>) -> syn::Result<Vec<ConfigId>> {
         let mut i = 0;
         while i < cur.len() {
             //println!("I = {} < {}", i, cur.len());
             let cfp = cur[i].clone();
-            let rhs = &cfp.borrow().rule.borrow().rhs;
-            let dot = cfp.borrow().dot;
+            let rhs = self.the_rules.get(self.the_configs.get(cfp).rule).rhs.clone();
+            let dot = self.the_configs.get(cfp).dot;
             if dot < rhs.len() {
-                let WSymbolAlias(sp, span, ..) = &rhs[dot];
-                if let NonTerminal{rules, ..} = &sp.borrow().typ {
+                let SymbolAlias(sp, span, ..) = &rhs[dot];
+                let rules = self.the_symbols.get(sp).get_non_terminal_rules().map(|s| s.to_owned());
+                if let Some(rules) = rules {
                     if rules.is_empty() {
                         if *sp != self.error_symbol {
                             return error_span(*span, "Nonterminal has no rules"); //tested
                         }
                     }
                     for newrp in rules {
-                        let newcfp = Lemon::add_config(&mut cur, newrp.clone(), 0);
+                        let newcfp = self.add_config(&mut cur, newrp.clone(), 0);
                         let mut broken = false;
-                        for WSymbolAlias(xsp, ..) in &rhs[dot + 1 ..] {
-                            let xsp = xsp.borrow();
+                        for SymbolAlias(xsp, ..) in &rhs[dot + 1 ..] {
+                            let xsp = self.the_symbols.get(xsp);
                             match &xsp.typ {
                                 Terminal => {
-                                    let mut newcfp = newcfp.borrow_mut();
+                                    let mut newcfp = self.the_configs.get_mut(newcfp);
                                     newcfp.fws.insert(xsp.index);
                                     broken = true;
                                     break;
                                 }
                                 MultiTerminal(sub_sym) => {
-                                    let mut newcfp = newcfp.borrow_mut();
+                                    let mut newcfp = self.the_configs.get_mut(newcfp);
                                     for k in sub_sym {
-                                        newcfp.fws.insert(k.borrow().index);
+                                        newcfp.fws.insert(self.the_symbols.get(k).index);
                                     }
                                     broken = true;
                                     break;
                                 }
                                 NonTerminal{ first_set, lambda, ..} => {
-                                    let mut newcfp = newcfp.borrow_mut();
-                                    newcfp.fws.append(&mut first_set.clone());
+                                    let mut newcfp = self.the_configs.get_mut(newcfp);
+                                    newcfp.fws.extend(first_set.iter().cloned());
                                     if !lambda {
                                         broken = true;
                                         break;
@@ -1427,7 +1466,7 @@ impl Lemon {
                             }
                         }
                         if !broken {
-                            cfp.borrow_mut().fplp.push((&newcfp).into());
+                            self.the_configs.get_mut(cfp).fplp.push(newcfp);
                         }
                     }
                 }
@@ -1438,11 +1477,11 @@ impl Lemon {
         Ok(cur)
     }
 
-    fn add_config(cfgs: &mut ConfigList, rule: WRCell<Rule>, dot: usize) -> RCell<Config> {
-        match cfgs.iter().position(|x| config_cmp_key(x, rule.borrow().index, dot) == Ordering::Equal) {
-            Some(i) => cfgs[i].clone(),
+    fn add_config(&mut self, cfgs: &mut Vec<ConfigId>, rule: RuleId, dot: usize) -> ConfigId {
+        match cfgs.iter().position(|x| config_cmp_key(self, *x, self.the_rules.get(rule).index, dot) == Ordering::Equal) {
+            Some(i) => cfgs[i],
             None => {
-                let c = Rc::new(RefCell::new(Config {
+                let c = Config {
                     rule,
                     dot,
                     fws: RuleSet::new(),
@@ -1450,27 +1489,28 @@ impl Lemon {
                     bplp: Vec::new(),
                     //stp: None,
                     status: CfgStatus::Incomplete,
-                }));
-                cfgs.push(c.clone());
-                c
+                };
+                let id = self.the_configs.push(c);
+                cfgs.push(id);
+                id
             }
         }
     }
 
-    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> WSymbol {
+    fn symbol_new_s(&mut self, name: &str, typ: NewSymbolType) -> SymbolId {
         self.symbol_new(name, typ)
     }
-    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> WSymbol {
+    fn symbol_new_t(&mut self, name: &Ident, typ: NewSymbolType) -> SymbolId {
         self.symbol_new(name.to_string().as_ref(), typ)
     }
-    fn symbol_new_t_span(&mut self, name: &Ident, typ: NewSymbolType) -> WSymbolSpan {
+    fn symbol_new_t_span(&mut self, name: &Ident, typ: NewSymbolType) -> SymbolSpan {
         let sym = self.symbol_new_t(name, typ);
-        WSymbolSpan(sym, name.span())
+        SymbolSpan(sym, name.span())
     }
-    fn symbol_new(&mut self, name: &str, typ: NewSymbolType) -> WSymbol {
+    fn symbol_new(&mut self, name: &str, typ: NewSymbolType) -> SymbolId {
         if !name.is_empty() {
             for s in &self.symbols {
-                let mut b = s.borrow_mut();
+                let mut b = self.the_symbols.get_mut(s);
                 if b.name == name {
                     b.use_cnt += 1;
                     //If asked for a MultiTerminal, but it is a Terminal, convert it
@@ -1481,7 +1521,7 @@ impl Lemon {
                             _ => unreachable!(),
                         }
                     }
-                    return s.into();
+                    return *s;
                 }
             }
         }
@@ -1504,14 +1544,14 @@ impl Lemon {
             data_type: None,
             dt_num: 0,
         };
-        let symbol = Rc::new(RefCell::new(symbol));
-        let w = (&symbol).into();
-        self.symbols.push(symbol);
-        w
+
+        let id = self.the_symbols.push(symbol);
+        self.symbols.push(id);
+        id
     }
-    fn symbol_find(&self, name: &str) -> Option<RcSymbol> {
+    fn symbol_find(&self, name: &str) -> Option<SymbolId> {
         for s in &self.symbols {
-            let b = s.borrow();
+            let b = self.the_symbols.get(s);
             if b.name == name {
                 return Some(s.clone());
             }
@@ -1519,16 +1559,15 @@ impl Lemon {
         None
     }
 
-
     /*
      ** Compare two states for sorting purposes.  The smaller state is the
      ** one with the most non-terminal actions.  If they have the same number
      ** of non-terminal actions, then the smaller is the one with the most
      ** token actions.
      */
-    fn state_resort_cmp(a: &RCell<State>, b: &RCell<State>) -> Ordering {
-        let a = a.borrow();
-        let b = b.borrow();
+    fn state_resort_cmp(&self, a: StateId, b: StateId) -> Ordering {
+        let a = self.the_states.get(a);
+        let b = self.the_states.get(b);
         (b.n_nt_act, b.n_tkn_act, b.state_num).cmp(&(a.n_nt_act, a.n_tkn_act, a.state_num))
     }
 
@@ -1568,7 +1607,7 @@ impl Lemon {
                     return error_span(id.span(), "Symbol must start with uppercase or lowercase letter"); //tested
                 };
                 let sp = self.symbol_new_t(&id, nst);
-                let mut sp = sp.borrow_mut();
+                let mut sp = self.the_symbols.get_mut(sp);
                 if sp.data_type.is_some() {
                     return error_span(id.span(), "Symbol type already defined"); //tested
                 }
@@ -1581,7 +1620,7 @@ impl Lemon {
                         return error_span(token.span(), "Precedence cannot be assigned to a non-terminal"); //tested
                     }
                     let sp = self.symbol_new_t(&token, NewSymbolType::Terminal);
-                    let mut b = sp.borrow_mut();
+                    let mut b = self.the_symbols.get_mut(sp);
                     match b.precedence {
                         Some(_) => return error_span(token.span(), "Symbol has already been given a precedence"), //tested
                         None => b.precedence = Some(Precedence(pdt.precedence, a)),
@@ -1620,18 +1659,20 @@ impl Lemon {
                     return error_span(fb.span(), "Fallback must be a token"); //tested
                 }
                 let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
+                let mut has_fallback = self.has_fallback;
                 for id in ids {
                     if !is_terminal_ident(&id) {
                         return error_span(id.span(), "Fallback ids must be tokens"); //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
-                    let mut b = sp.borrow_mut();
+                    let mut b = self.the_symbols.get_mut(sp);
                     if b.fallback.is_some() {
                         return error_span(id.span(), "More than one fallback assigned to token"); //tested
                     }
                     b.fallback = Some(fallback.clone());
-                    self.has_fallback = true;
+                    has_fallback = true;
                 }
+                self.has_fallback = has_fallback;
             }
             Decl::Wildcard(id) => {
                 if self.wildcard.is_some() {
@@ -1653,7 +1694,7 @@ impl Lemon {
                         return error_span(id.span(), "token_class ids must be tokens"); //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
-                    if let MultiTerminal(sub_sym) = &mut tk.borrow_mut().typ {
+                    if let MultiTerminal(sub_sym) = &mut self.the_symbols.get_mut(tk).typ {
                         sub_sym.push(sp.into());
                     } else {
                         unreachable!();
@@ -1695,7 +1736,7 @@ impl Lemon {
                 }
                 let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
                 let rhs = rhs.into_iter().map(|(toks, optional, alias)| {
-                    let WSymbolSpan(tok, span) = if toks.len() == 1 {
+                    let SymbolSpan(tok, span) = if toks.len() == 1 {
                         let tok = toks.into_iter().next().unwrap();
                         let nst = if is_terminal_ident(&tok) {
                             NewSymbolType::Terminal
@@ -1710,7 +1751,7 @@ impl Lemon {
                                 sym_l.clone()
                             } else {
                                 let sym_l = self.symbol_new_s(&format!("_{}", self.optional_tokens.len()), NewSymbolType::NonTerminal);
-                                let sym_l = WSymbolSpan(sym_l, tok.span());
+                                let sym_l = SymbolSpan(sym_l, tok.span());
                                 self.optional_tokens.insert(sym_r, sym_l.clone());
                                 sym_l
                             }
@@ -1727,14 +1768,14 @@ impl Lemon {
                             }
                             ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                         }
-                        if let MultiTerminal(sub_sym) = &mut mt.borrow_mut().typ {
+                        if let MultiTerminal(sub_sym) = &mut self.the_symbols.get_mut(mt).typ {
                             sub_sym.extend(ss);
                         } else {
                             unreachable!();
                         }
-                        WSymbolSpan(mt.into(), span)
+                        SymbolSpan(mt.into(), span)
                     };
-                    Ok(WSymbolAlias(tok, span, alias))
+                    Ok(SymbolAlias(tok, span, alias))
                 }).collect::<syn::Result<Vec<_>>>()?;
 
                 let prec_sym = match &prec {
@@ -1753,7 +1794,7 @@ impl Lemon {
         Ok(())
     }
 
-    fn create_rule(&mut self, span: Span, lhs: WSymbolSpan, rhs: Vec<WSymbolAlias>, code: Option<Block>, prec_sym: Option<WSymbol>) {
+    fn create_rule(&mut self, span: Span, lhs: SymbolSpan, rhs: Vec<SymbolAlias>, code: Option<Block>, prec_sym: Option<SymbolId>) {
         let index = self.rules.len();
         let rule = Rule {
             span,
@@ -1766,16 +1807,18 @@ impl Lemon {
             index,
             can_reduce: false,
         };
-        let rule = Rc::new(RefCell::new(rule));
-        if let NonTerminal{rules, ..} = &mut rule.borrow().lhs.0.borrow_mut().typ {
-            rules.push((&rule).into());
+        let id = self.the_rules.push(rule);
+        let rule = self.the_rules.get_mut(id);
+
+        if let NonTerminal { rules, ..} = &mut self.the_symbols.get_mut(rule.lhs.0).typ {
+            rules.push(id);
         } else {
             unreachable!("lhs is not a non-terminal");
         }
-        self.rules.push(rule);
+        self.rules.push(id);
     }
 
-    fn generate_source(&self) -> syn::Result<TokenStream> {
+    fn generate_source(&mut self) -> syn::Result<TokenStream> {
         let mut src = TokenStream::new();
         src.extend(quote!{
             #![allow(dead_code)]
@@ -1792,8 +1835,8 @@ impl Lemon {
         let yycodetype = minimum_signed_type(self.symbols.len());
         let yyactiontype = minimum_unsigned_type(self.states.len() + self.rules.len() + 5);
         let yynocode = (self.symbols.len()) as i32;
-        let yywildcard = if let Some(wildcard) = &self.wildcard {
-            let wildcard = wildcard.borrow();
+        let yywildcard = if let Some(wildcard) = self.wildcard {
+            let wildcard = self.the_symbols.get(wildcard);
             if let Some(dt) = &wildcard.data_type {
                 return error_span(dt.span(), "Wildcard token must not have a type"); //tested
             }
@@ -1828,12 +1871,12 @@ impl Lemon {
 
         for sp in &self.symbols {
             if let Some(wildcard) = &self.wildcard {
-               if WSymbol::from(sp) == *wildcard {
+               if sp == wildcard {
                    continue;
                }
             }
 
-            let mut sp = sp.borrow_mut();
+            let mut sp = self.the_symbols.get_mut(sp);
 
             /* Determine the data_type of each symbol and fill its dt_num */
             let data_type = match &sp.typ {
@@ -1841,7 +1884,7 @@ impl Lemon {
                     //MultiTerminals have the type of the first child.
                     //The type of the children need be the same only if an alias is used, so we
                     //cannot check it here
-                    let first = ss.first().unwrap().borrow();
+                    let first = self.the_symbols.get(ss.first().unwrap());
                     first.data_type.clone()
                 }
                 SymbolType::Terminal => {
@@ -1923,7 +1966,7 @@ impl Lemon {
         ));
 
 
-        let error_symbol = self.error_symbol.borrow();
+        let error_symbol = self.the_symbols.get(self.error_symbol);
         let yynstate = Literal::usize_unsuffixed(self.states.len());
         let yynrule = Literal::usize_unsuffixed(self.rules.len());
         let yyerrorsymbol = if error_symbol.use_cnt > 1 {
@@ -1956,14 +1999,14 @@ impl Lemon {
         /* Compute the actions on all states and count them up */
         for stp in &self.states {
             ax.push(AxSet {
-                stp: stp.clone(),
+                stp: *stp,
                 is_tkn: true,
-                n_action: stp.borrow().n_tkn_act,
+                n_action: self.the_states.get(stp).n_tkn_act,
             });
             ax.push(AxSet {
-                stp: stp.clone(),
+                stp: *stp,
                 is_tkn: false,
-                n_action: stp.borrow().n_nt_act,
+                n_action: self.the_states.get(stp).n_nt_act,
             });
         }
 
@@ -1986,9 +2029,9 @@ impl Lemon {
 
             if a.n_action == 0 { continue }
             if a.is_tkn {
-                for ap in &a.stp.borrow().actions {
+                for ap in &self.the_states.get(a.stp).actions {
                     let ap = ap.borrow();
-                    let sp = ap.look_ahead.borrow();
+                    let sp = self.the_symbols.get(ap.look_ahead);
                     if sp.index >= self.num_terminals { continue }
                     match self.compute_action(&ap) {
                         None => continue,
@@ -1996,14 +2039,14 @@ impl Lemon {
                     }
                 }
                 let ofs = acttab.insert_action_set(&actset);
-                let mut stp = a.stp.borrow_mut();
+                let mut stp = self.the_states.get_mut(a.stp);
                 stp.i_tkn_ofst = Some(ofs);
                 min_tkn_ofst = cmp::min(ofs, min_tkn_ofst);
                 max_tkn_ofst = cmp::max(ofs, max_tkn_ofst);
             } else {
-                for ap in &a.stp.borrow().actions {
+                for ap in &self.the_states.get(a.stp).actions {
                     let ap = ap.borrow();
-                    let sp = ap.look_ahead.borrow();
+                    let sp = self.the_symbols.get(ap.look_ahead);
                     if sp.index < self.num_terminals { continue }
                     if sp.index == self.default_index { continue }
                     //sp is a non-default NonTerminal
@@ -2013,7 +2056,7 @@ impl Lemon {
                     }
                 }
                 let ofs = acttab.insert_action_set(&actset);
-                let mut stp = a.stp.borrow_mut();
+                let mut stp = self.the_states.get_mut(a.stp);
                 stp.i_nt_ofst = Some(ofs);
                 min_nt_ofst = cmp::min(ofs, min_nt_ofst);
                 max_nt_ofst = cmp::max(ofs, max_nt_ofst);
@@ -2026,7 +2069,7 @@ impl Lemon {
         let mut token_builds = Vec::new();
         let mut token_extra = Vec::new();
         for i in 1 .. self.num_terminals {
-            let s = self.symbols[i].borrow();
+            let s = self.the_symbols.get(self.symbols[i]);
             let i = i as i32;
             let name = Ident::new(&s.name, Span::call_site());
             let yydt = Ident::new(&format!("YY{}", s.dt_num), Span::call_site());
@@ -2123,7 +2166,7 @@ impl Lemon {
 
         /* Output the yy_shift_ofst[] table */
         let n = self.states.iter().rposition(|st|
-                        st.borrow().i_tkn_ofst.is_some()
+                        self.the_states.get(st).i_tkn_ofst.is_some()
                     ).unwrap();
         let yy_shift_use_dflt = min_tkn_ofst - 1;
         src.extend(quote!(const YY_SHIFT_USE_DFLT: i32 = #yy_shift_use_dflt;));
@@ -2132,7 +2175,7 @@ impl Lemon {
         src.extend(quote!(const YY_SHIFT_MAX: i32 = #max_tkn_ofst;));
         let yy_shift_ofst_type = minimum_signed_type(max_tkn_ofst as usize);
         let yy_shift_ofst = self.states[0..=n].iter().map(|stp| {
-                let stp = stp.borrow();
+                let stp = self.the_states.get(stp);
                 stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1)
             }).map(Literal::i32_unsuffixed);
         let yy_shift_ofst_len = yy_shift_ofst.len();
@@ -2140,7 +2183,7 @@ impl Lemon {
 
         /* Output the yy_reduce_ofst[] table */
         let n = self.states.iter().rposition(|st|
-                        st.borrow().i_nt_ofst.is_some()
+                        self.the_states.get(st).i_nt_ofst.is_some()
                     ).unwrap();
         let yy_reduce_use_dflt = min_nt_ofst - 1;
         src.extend(quote!(const YY_REDUCE_USE_DFLT: i32 = #yy_reduce_use_dflt;));
@@ -2149,30 +2192,30 @@ impl Lemon {
         src.extend(quote!(const YY_REDUCE_MAX: i32 = #max_nt_ofst;));
         let yy_reduce_ofst_type = minimum_signed_type(max_nt_ofst as usize);
         let yy_reduce_ofst = self.states[0..=n].iter().map(|stp| {
-                let stp = stp.borrow();
+                let stp = self.the_states.get(stp);
                 stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1)
             }).map(Literal::i32_unsuffixed);
         let yy_reduce_ofst_len = yy_reduce_ofst.len();
         src.extend(quote!(static YY_REDUCE_OFST: [#yy_reduce_ofst_type; #yy_reduce_ofst_len] = [ #(#yy_reduce_ofst),* ];));
 
         let yy_default = self.states.iter().map(|stp| {
-                stp.borrow().i_dflt
+                self.the_states.get(stp).i_dflt
             }).map(Literal::usize_unsuffixed);
         let yy_default_len = yy_default.len();
         src.extend(quote!(static YY_DEFAULT: [#yyactiontype; #yy_default_len] = [ #(#yy_default),* ];));
 
         /* Generate the table of fallback tokens. */
         let mx = self.symbols.iter().rposition(|sy|
-                        sy.borrow().fallback.is_some()
+                        self.the_symbols.get(sy).fallback.is_some()
                     ).map_or(0, |x| x + 1);
         let yy_fallback = self.symbols[0..mx].iter().map(|p| {
-                let p = p.borrow();
+                let p = self.the_symbols.get(p);
                 match &p.fallback {
                     None => {
                         Ok(0)
                     }
                     Some(fb) => {
-                        let fb = fb.borrow();
+                        let fb = self.the_symbols.get(fb);
                         match (fb.dt_num, p.dt_num) {
                             (0, _) => {}
                             (fdt, pdt) if fdt == pdt => {}
@@ -2193,14 +2236,14 @@ impl Lemon {
          ** sequentually beginning with 0.
          */
         let yy_rule_info = self.rules.iter().map(|rp| {
-                rp.borrow().lhs.0.borrow().index
+                self.the_symbols.get(self.the_rules.get(rp).lhs.0).index
             }).map(Literal::usize_unsuffixed);
         let yy_rule_info_len = yy_rule_info.len();
         src.extend(quote!(static YY_RULE_INFO: [#yycodetype; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
 
         let unit_type : Type = parse_quote!(());
         let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
-        let start = self.start.as_ref().unwrap().borrow();
+        let start = self.the_symbols.get(self.start.unwrap());
         let yyroottype = start.data_type.as_ref().unwrap_or(&unit_type);
         let yyerrtype = self.err_type.as_ref().unwrap_or(&unit_type);
 
@@ -2506,7 +2549,7 @@ impl Lemon {
         //TODO avoid dumping the same code twice
         let mut yyrules = Vec::new();
         for rp in &self.rules {
-            let rp = rp.borrow();
+            let rp = self.the_rules.get(rp);
             let code = self.translate_code(&rp)?;
             let index = rp.index as i32;
 
@@ -2561,7 +2604,7 @@ impl Lemon {
     }
 
     fn translate_code(&self, rp: &Rule) -> syn::Result<TokenStream> {
-        let lhs = rp.lhs.0.borrow();
+        let lhs = self.the_symbols.get(rp.lhs.0);
         let mut code = TokenStream::new();
 
         for i in (0..rp.rhs.len()).rev() {
@@ -2573,14 +2616,14 @@ impl Lemon {
         let yyrestype = lhs.data_type.as_ref().unwrap_or(&unit_type);
 
         let mut yymatch = Vec::new();
-        for (i, WSymbolAlias(r, _, alias)) in rp.rhs.iter().enumerate() {
-            let r = r.borrow();
+        for (i, SymbolAlias(r, _, alias)) in rp.rhs.iter().enumerate() {
+            let r = self.the_symbols.get(r);
             let yypi = Ident::new(&format!("yyp{}", i), Span::call_site());
             yymatch.push(quote!(#yypi.minor));
             match (alias, &r.typ) {
                 (Some(alias), MultiTerminal(ss)) => {
                     for or in &ss[1..] {
-                        if r.dt_num != or.borrow().dt_num {
+                        if r.dt_num != self.the_symbols.get(or).dt_num {
                             return error_span(alias.span(), "Compound tokens with an alias must all have the same type"); //tested
                         }
                     }
@@ -2590,8 +2633,8 @@ impl Lemon {
         }
 
         let mut yypattern = Vec::new();
-        for WSymbolAlias(r, _, alias) in &rp.rhs {
-            let yydt = Ident::new(&format!("YY{}", r.borrow().dt_num), Span::call_site());
+        for SymbolAlias(r, _, alias) in &rp.rhs {
+            let yydt = Ident::new(&format!("YY{}", self.the_symbols.get(r).dt_num), Span::call_site());
             match alias {
                 Some(alias) => {
                     if Some(r) == self.wildcard.as_ref() {
