@@ -1803,6 +1803,7 @@ impl Pomelo {
             #![allow(unreachable_code)]
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
+            #![allow(unused_braces)]
         });
 
         for code in &self.includes {
