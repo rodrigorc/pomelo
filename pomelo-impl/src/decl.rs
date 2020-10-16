@@ -1,4 +1,4 @@
-use syn::{Ident, Type, Item, ItemEnum, ItemStruct, Block, Pat};
+use syn::{Block, Ident, Item, ItemEnum, ItemStruct, Pat, Type};
 
 #[derive(Debug, Copy, Clone)]
 pub enum Associativity {
@@ -33,6 +33,5 @@ pub enum Decl {
         rhs: Vec<(Vec<Ident>, bool, Option<Pat>)>,
         action: Option<Block>,
         prec: Option<Ident>,
-    }
+    },
 }
-
