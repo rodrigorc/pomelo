@@ -1,5 +1,5 @@
-use std::cell::{RefCell, Ref, RefMut};
 use std::borrow::Borrow;
+use std::cell::{Ref, RefCell, RefMut};
 
 #[derive(Debug, Clone)]
 pub struct VecRef<T> {
@@ -8,9 +8,7 @@ pub struct VecRef<T> {
 
 impl<T> VecRef<T> {
     pub fn new() -> VecRef<T> {
-        VecRef {
-            data: Vec::new(),
-        }
+        VecRef { data: Vec::new() }
     }
     pub fn push(&mut self, t: T) -> VecRefId<T> {
         let id = self.data.len();
@@ -28,15 +26,13 @@ impl<T> VecRef<T> {
     }
 }
 
-
 #[derive(Debug)]
 pub struct VecRefId<T> {
     id: usize,
     _pd: std::marker::PhantomData<T>,
 }
 
-impl<T> Copy for VecRefId<T> {
-}
+impl<T> Copy for VecRefId<T> {}
 
 impl<T> Clone for VecRefId<T> {
     fn clone(&self) -> Self {
@@ -52,8 +48,7 @@ impl<T> PartialEq for VecRefId<T> {
     }
 }
 
-impl<T> Eq for VecRefId<T> {
-}
+impl<T> Eq for VecRefId<T> {}
 
 impl<T> std::hash::Hash for VecRefId<T> {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
@@ -69,4 +64,3 @@ impl<T> VecRefId<T> {
         }
     }
 }
-

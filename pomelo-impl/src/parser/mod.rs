@@ -1,14 +1,14 @@
-use std::collections::{BTreeSet, HashMap};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Write};
 use std::hash::{Hash, Hasher};
-use std::borrow::Cow;
 
-use proc_macro2::{Span, TokenStream, Literal};
-use syn::{Ident, Type, Item, ItemEnum, ItemStruct, Block, Pat, Fields, Variant, spanned::Spanned};
-use quote::ToTokens;
 use crate::decl::*;
+use proc_macro2::{Literal, Span, TokenStream};
+use quote::ToTokens;
+use syn::{spanned::Spanned, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type, Variant};
 
 mod vecref;
 use vecref::*;
@@ -26,14 +26,12 @@ struct Precedence(i32, Associativity);
 
 fn precedence_cmp(a: Precedence, b: Precedence) -> Ordering {
     match a.0.cmp(&b.0) {
-        Ordering::Equal => {
-            match a.1 {
-                Associativity::Left => Ordering::Less,
-                Associativity::Right => Ordering::Greater,
-                Associativity::None => Ordering::Equal,
-            }
-        }
-        o => o
+        Ordering::Equal => match a.1 {
+            Associativity::Left => Ordering::Less,
+            Associativity::Right => Ordering::Greater,
+            Associativity::None => Ordering::Equal,
+        },
+        o => o,
     }
 }
 
@@ -55,14 +53,14 @@ struct SymbolAlias(SymbolId, Span, Option<Pat>);
 #[derive(Debug)]
 struct Rule {
     span: Span,
-    lhs: SymbolSpan,  //Left-hand side of the rule
-    lhs_start: bool,    //True if LHS is the start symbol
-    rhs: Vec<SymbolAlias>,   //RHS symbols and aliases
-    code: Option<Block>,//The code executed when this rule is reduced
-    prec_sym: Option<SymbolId>, //Precedence symbol for this rule
+    lhs: SymbolSpan,                //Left-hand side of the rule
+    lhs_start: bool,                //True if LHS is the start symbol
+    rhs: Vec<SymbolAlias>,          //RHS symbols and aliases
+    code: Option<Block>,            //The code executed when this rule is reduced
+    prec_sym: Option<SymbolId>,     //Precedence symbol for this rule
     precedence: Option<Precedence>, //Actual precedence for this rule
-    index: usize,         //An index number for this rule
-    can_reduce: bool,   //True if this rule is ever reduced
+    index: usize,                   //An index number for this rule
+    can_reduce: bool,               //True if this rule is ever reduced
 }
 
 #[derive(Debug)]
@@ -70,8 +68,8 @@ enum SymbolType {
     Terminal,
     NonTerminal {
         rules: Vec<RuleId>, //List of rules, if a NonTerminal
-        first_set: RuleSet,             //First-set for all rules of this symbol
-        lambda: bool,                   //True if NonTerminal and can generate an empty string
+        first_set: RuleSet, //First-set for all rules of this symbol
+        lambda: bool,       //True if NonTerminal and can generate an empty string
     },
     MultiTerminal(Vec<SymbolId>), //constituent symbols if MultiTerminal
 }
@@ -79,27 +77,27 @@ use SymbolType::*;
 
 #[derive(Debug)]
 struct Symbol {
-    name: String,               //Name of the symbol
-    index: usize,               //Index number for this symbol
-    typ: SymbolType,            //Either Terminal or NonTerminal
-    fallback: Option<SymbolId>, //Fallback token in case this token desn't parse
-    precedence: Option<Precedence>,  //Precedence
-    use_cnt: i32,               //Number of times used
-    data_type: Option<Type>,    //Data type held by this object
-    dt_num: usize,              //The data type number (0 is always ()). The YY{} element of stack is the correct data type for this object
+    name: String,                   //Name of the symbol
+    index: usize,                   //Index number for this symbol
+    typ: SymbolType,                //Either Terminal or NonTerminal
+    fallback: Option<SymbolId>,     //Fallback token in case this token desn't parse
+    precedence: Option<Precedence>, //Precedence
+    use_cnt: i32,                   //Number of times used
+    data_type: Option<Type>,        //Data type held by this object
+    dt_num: usize, //The data type number (0 is always ()). The YY{} element of stack is the correct data type for this object
 }
 
 impl Symbol {
     fn is_lambda(&self) -> bool {
         match self.typ {
             NonTerminal { lambda, .. } => lambda,
-            _ => false
+            _ => false,
         }
     }
     fn get_non_terminal_rules(&self) -> Option<&[RuleId]> {
         match &self.typ {
             NonTerminal { rules, .. } => Some(rules),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -118,17 +116,17 @@ impl Hash for Symbol {
 #[derive(Debug)]
 enum CfgStatus {
     Complete,
-    Incomplete
+    Incomplete,
 }
 
 #[derive(Debug)]
 struct Config {
-    rule: RuleId,   //The rule upon which the configuration is based
-    dot: usize,           //The parse point
-    fws: RuleSet,       //Follow-set for this configuration only
-    fplp: Vec<ConfigId>,  //Follow-set forward propagation links
-    bplp: Vec<ConfigId>,  //Follow-set backwards propagation links
-    status: CfgStatus,  //Used during followset and shift computations
+    rule: RuleId,        //The rule upon which the configuration is based
+    dot: usize,          //The parse point
+    fws: RuleSet,        //Follow-set for this configuration only
+    fplp: Vec<ConfigId>, //Follow-set forward propagation links
+    bplp: Vec<ConfigId>, //Follow-set backwards propagation links
+    status: CfgStatus,   //Used during followset and shift computations
 }
 
 fn config_cmp_key(data: &Pomelo, a: ConfigId, index: usize, dot: usize) -> Ordering {
@@ -149,36 +147,42 @@ enum ActionDetail {
     Accept,
     Reduce(RuleId),
     Error,
-    SSConflict(StateId),    //A shift/shift conflict
-    SRConflict(RuleId),     //Was a reduce, but part of a conflict
-    RRConflict(RuleId),     //Was a reduce, but part of a conflict
-    SHResolved(StateId),    //Was a shift. Associativity resolved conflict
-    RDResolved(RuleId),     //Was reduce. Associativity resolved conflict
-    NotUsed                 //Deleted by compression
+    SSConflict(StateId), //A shift/shift conflict
+    SRConflict(RuleId),  //Was a reduce, but part of a conflict
+    RRConflict(RuleId),  //Was a reduce, but part of a conflict
+    SHResolved(StateId), //Was a shift. Associativity resolved conflict
+    RDResolved(RuleId),  //Was reduce. Associativity resolved conflict
+    NotUsed,             //Deleted by compression
 }
 
 impl ActionDetail {
-    fn cmp(the_states: &VecRef<State>, the_rules: &VecRef<Rule>, a: &ActionDetail, b: &ActionDetail) -> Ordering {
+    fn cmp(
+        the_states: &VecRef<State>,
+        the_rules: &VecRef<Rule>,
+        a: &ActionDetail,
+        b: &ActionDetail,
+    ) -> Ordering {
         use ActionDetail::*;
         match a {
             Shift(sa) => match b {
-                Shift(sb) => the_states.get(sa).state_num.cmp(&the_states.get(sb).state_num),
+                Shift(sb) => the_states
+                    .get(sa)
+                    .state_num
+                    .cmp(&the_states.get(sb).state_num),
                 _ => Ordering::Less,
-            }
+            },
             Accept => match b {
                 Shift(_) => Ordering::Greater,
                 Accept => Ordering::Equal,
                 _ => Ordering::Less,
-            }
+            },
             Reduce(ra) => match b {
                 Shift(_) => Ordering::Greater,
                 Accept => Ordering::Greater,
                 Reduce(rb) => the_rules.get(ra).index.cmp(&the_rules.get(rb).index),
                 _ => Ordering::Less,
-            }
-            _ => {
-                Ordering::Equal
-            }
+            },
+            _ => Ordering::Equal,
         }
     }
 }
@@ -186,14 +190,23 @@ impl ActionDetail {
 //Every shift or reduce operation is stored as one of the following
 #[derive(Debug)]
 struct Action {
-  look_ahead: SymbolId,           //The look-ahead symbol
-  detail: ActionDetail,
+    look_ahead: SymbolId, //The look-ahead symbol
+    detail: ActionDetail,
 }
 
-fn action_cmp(the_symbols: &VecRef<Symbol>, the_states: &VecRef<State>, the_rules: &VecRef<Rule>, a: &RefCell<Action>, b: &RefCell<Action>) -> Ordering {
+fn action_cmp(
+    the_symbols: &VecRef<Symbol>,
+    the_states: &VecRef<State>,
+    the_rules: &VecRef<Rule>,
+    a: &RefCell<Action>,
+    b: &RefCell<Action>,
+) -> Ordering {
     let a = a.borrow();
     let b = b.borrow();
-    let rc = the_symbols.get(a.look_ahead).index.cmp(&the_symbols.get(b.look_ahead).index);
+    let rc = the_symbols
+        .get(a.look_ahead)
+        .index
+        .cmp(&the_symbols.get(b.look_ahead).index);
     match rc {
         Ordering::Equal => ActionDetail::cmp(&the_states, &the_rules, &a.detail, &b.detail),
         rc => rc,
@@ -202,42 +215,42 @@ fn action_cmp(the_symbols: &VecRef<Symbol>, the_states: &VecRef<State>, the_rule
 
 #[derive(Debug)]
 struct State {
-    configs: Vec<ConfigId>,  //All configurations in this set
-    basis: Vec<ConfigId>,    //The basis configuration for this state
-    state_num: usize,        //Sequential number for this state
-    actions: Vec<RefCell<Action>>,    //Array of actions for this state
-    n_tkn_act: i32,          //number of actions on terminals and non-terminals
+    configs: Vec<ConfigId>,        //All configurations in this set
+    basis: Vec<ConfigId>,          //The basis configuration for this state
+    state_num: usize,              //Sequential number for this state
+    actions: Vec<RefCell<Action>>, //Array of actions for this state
+    n_tkn_act: i32,                //number of actions on terminals and non-terminals
     n_nt_act: i32,
     i_tkn_ofst: Option<i32>, //yy_action[] offset for terminals and non-terminals
     i_nt_ofst: Option<i32>,
-    i_dflt: usize,           //Default action
+    i_dflt: usize, //Default action
 }
 
 #[derive(Debug)]
 pub struct Pomelo {
-    the_symbols: VecRef<Symbol>,       //Unsorted array of symbols
-    the_states: VecRef<State>, //Unsorted list of states
-    the_rules: VecRef<Rule>,  //Unsorted list of all rules
+    the_symbols: VecRef<Symbol>, //Unsorted array of symbols
+    the_states: VecRef<State>,   //Unsorted list of states
+    the_rules: VecRef<Rule>,     //Unsorted list of all rules
     the_configs: VecRef<Config>, //Unsorted list of configs,
     module: Ident,
     includes: Vec<Item>,
     syntax_error: Option<Block>,
     parse_fail: Option<Block>,
     stack_overflow: Option<Block>,
-    token_enum: Option<ItemEnum>,   //The enum Token{}, if specified with %token
+    token_enum: Option<ItemEnum>, //The enum Token{}, if specified with %token
     parser_struct: Option<ItemStruct>, //The struct Parser{}, if specified with %parser
-    states: Vec<StateId>,      //Table of states sorted by state number
-    rules: Vec<RuleId>,             //List of all rules
-    default_index: usize,           //The index of the default symbol (always the last one in symbols)
-    num_terminals: usize,           //symbols[0..num_terminals] are the terminal symbols
-    symbols: Vec<SymbolId>,         //Sorted array of symbols
-    error_symbol: SymbolId,          //The error symbol
-    wildcard: Option<SymbolId>,      //The symbol that matches anything
-    arg: Option<Type>,              //Declaration of the extra argument to parser
-    err_type: Option<Type>,         //Declaration of the error type of the parser
-    nconflict: i32,                 //Number of parsing conflicts
-    has_fallback: bool,             //True if any %fallback is seen in the grammar
-    default_type: Option<Type>,     //The %default_type
+    states: Vec<StateId>,         //Table of states sorted by state number
+    rules: Vec<RuleId>,           //List of all rules
+    default_index: usize,         //The index of the default symbol (always the last one in symbols)
+    num_terminals: usize,         //symbols[0..num_terminals] are the terminal symbols
+    symbols: Vec<SymbolId>,       //Sorted array of symbols
+    error_symbol: SymbolId,       //The error symbol
+    wildcard: Option<SymbolId>,   //The symbol that matches anything
+    arg: Option<Type>,            //Declaration of the extra argument to parser
+    err_type: Option<Type>,       //Declaration of the error type of the parser
+    nconflict: i32,               //Number of parsing conflicts
+    has_fallback: bool,           //True if any %fallback is seen in the grammar
+    default_type: Option<Type>,   //The %default_type
     start: Option<SymbolId>,
     optional_tokens: HashMap<SymbolId, SymbolSpan>,
     extra_token: Option<Type>,
@@ -252,9 +265,9 @@ struct ParserData {
 
 #[derive(Debug)]
 struct AxSet {
-    stp: StateId,    // A pointer to a state
-    is_tkn: bool,               // true for tokens, false for non-terminals
-    n_action: i32,              // Number of actions
+    stp: StateId,  // A pointer to a state
+    is_tkn: bool,  // true for tokens, false for non-terminals
+    n_action: i32, // Number of actions
 }
 
 /*
@@ -279,13 +292,13 @@ struct AxSet {
 */
 #[derive(Debug, Copy, Clone)]
 struct LookaheadAction {
-    lookahead: usize,     // Value of the lookahead token
-    action: usize,        // Action to take on the given lookahead
+    lookahead: usize, // Value of the lookahead token
+    action: usize,    // Action to take on the given lookahead
 }
 
 #[derive(Debug)]
 struct ActionSet {
-    a_lookahead: Vec<LookaheadAction>,  // A single new transaction set
+    a_lookahead: Vec<LookaheadAction>, // A single new transaction set
 }
 
 impl ActionSet {
@@ -306,7 +319,7 @@ impl ActionSet {
 
 #[derive(Debug)]
 struct ActTab {
-    a_action: Vec<Option<LookaheadAction>>,     // The yy_action[] table under construction
+    a_action: Vec<Option<LookaheadAction>>, // The yy_action[] table under construction
 }
 
 impl ActTab {
@@ -337,23 +350,33 @@ impl ActTab {
          ** i is the index in self.a_action[] where min_lookahead is inserted.
          */
         let mut found = None;
-   'la: for (i, a) in self.a_action.iter().enumerate().rev() {
+        'la: for (i, a) in self.a_action.iter().enumerate().rev() {
             let a = match a {
                 None => continue,
                 Some(a) => a,
             };
             /* All lookaheads and actions in the a_lookahead[] transaction
              ** must match against the candidate a_action[i] entry. */
-            if a.lookahead != min_lookahead { continue }
-            if a.action != min_action { continue }
+            if a.lookahead != min_lookahead {
+                continue;
+            }
+            if a.action != min_action {
+                continue;
+            }
 
             for jla in &at2.a_lookahead {
                 let k = jla.lookahead as i32 - min_lookahead as i32 + i as i32;
-                if k < 0 || k as usize >= self.a_action.len() { continue 'la }
+                if k < 0 || k as usize >= self.a_action.len() {
+                    continue 'la;
+                }
                 match self.a_action[k as usize] {
                     Some(ka) => {
-                        if jla.lookahead != ka.lookahead { continue 'la }
-                        if jla.action != ka.action { continue 'la }
+                        if jla.lookahead != ka.lookahead {
+                            continue 'la;
+                        }
+                        if jla.action != ka.action {
+                            continue 'la;
+                        }
                     }
                     None => continue 'la,
                 }
@@ -373,13 +396,13 @@ impl ActTab {
             }
             if n == at2.a_lookahead.len() {
                 found = Some(i);
-                break;  /* An exact match is found at offset i */
+                break; /* An exact match is found at offset i */
             }
         }
-       /* If no existing offsets exactly match the current transaction, find an
-        ** an empty offset in the aAction[] table in which we can add the
-        ** aLookahead[] transaction.
-        */
+        /* If no existing offsets exactly match the current transaction, find an
+         ** an empty offset in the aAction[] table in which we can add the
+         ** aLookahead[] transaction.
+         */
         let i = match found {
             None => {
                 /* Look for holes in the aAction[] table that fit the current
@@ -387,7 +410,7 @@ impl ActTab {
                  ** If no holes are found, i is left at self.n_action, which means the
                  ** transaction will be appended. */
                 let mut r = self.a_action.len();
-           'ia: for i in 0 .. self.a_action.len() + max_lookahead {
+                'ia: for i in 0..self.a_action.len() + max_lookahead {
                     for jla in &at2.a_lookahead {
                         let k = jla.lookahead - min_lookahead + i;
                         if let Some(Some(_)) = self.a_action.get(k) {
@@ -396,14 +419,16 @@ impl ActTab {
                     }
                     for (j, ja) in self.a_action.iter().enumerate() {
                         let ja = match ja {
-                            None => { continue },
+                            None => continue,
                             Some(ja) => ja.lookahead as i32,
                         };
-                        if ja == (j as i32 + min_lookahead as i32 - i as i32) { continue 'ia }
+                        if ja == (j as i32 + min_lookahead as i32 - i as i32) {
+                            continue 'ia;
+                        }
                     }
                     r = i;
                     //println!("hole at {}", i);
-                    break
+                    break;
                 }
                 r
             }
@@ -525,10 +550,7 @@ impl Pomelo {
         pomelo.symbol_new("$", NewSymbolType::Terminal);
         pomelo.error_symbol = pomelo.symbol_new("error", NewSymbolType::NonTerminal);
 
-
-        let mut pdata = ParserData {
-            precedence: 0,
-        };
+        let mut pdata = ParserData { precedence: 0 };
 
         for decl in decls {
             pomelo.parse_one_decl(&mut pdata, decl)?;
@@ -582,7 +604,7 @@ impl Pomelo {
             fn symbol_ord(s: &SymbolType) -> i32 {
                 match s {
                     Terminal => 0,
-                    NonTerminal{..} => 1,
+                    NonTerminal { .. } => 1,
                     MultiTerminal(_) => 2,
                 }
             }
@@ -593,11 +615,11 @@ impl Pomelo {
 
         let mut last_terminal = 0;
         let mut default_index = 0;
-        for (i,s) in symbols.iter().enumerate() {
+        for (i, s) in symbols.iter().enumerate() {
             self.the_symbols.get_mut(s).index = i;
             match self.the_symbols.get(s).typ {
                 Terminal => last_terminal = i,
-                NonTerminal {..} => default_index = i,
+                NonTerminal { .. } => default_index = i,
                 _ => (),
             }
         }
@@ -612,11 +634,11 @@ impl Pomelo {
             self.start = Some(start);
         }
         if let Some(extra_token) = &self.extra_token {
-            for i in 1 .. self.num_terminals {
+            for i in 1..self.num_terminals {
                 let mut s = self.the_symbols.get_mut(self.symbols[i]);
                 s.data_type = match s.data_type.take() {
                     None => Some(extra_token.clone()),
-                    Some(dt) => Some(parse_quote!((#extra_token, #dt)))
+                    Some(dt) => Some(parse_quote!((#extra_token, #dt))),
                 }
             }
         }
@@ -628,14 +650,31 @@ impl Pomelo {
         //We consume the optional_tokens map, it is no longer needed
         let optional_tokens = std::mem::replace(&mut self.optional_tokens, Default::default());
         for (sym_r, SymbolSpan(sym_l, span)) in optional_tokens {
-            let dt = self.the_symbols.get(sym_r).data_type.clone().unwrap_or_else(|| parse_quote!(()));
+            let dt = self
+                .the_symbols
+                .get(sym_r)
+                .data_type
+                .clone()
+                .unwrap_or_else(|| parse_quote!(()));
             self.the_symbols.get_mut(sym_l).data_type = Some(parse_quote!(Option<#dt>));
             let sym_l = SymbolSpan(sym_l, span);
 
-            self.create_rule(span, sym_l.clone(), vec![], Some(parse_quote!({ None })), None);
+            self.create_rule(
+                span,
+                sym_l.clone(),
+                vec![],
+                Some(parse_quote!({ None })),
+                None,
+            );
 
             let rhs = SymbolAlias(sym_r, span, Some(parse_quote!(_A)));
-            self.create_rule(span, sym_l, vec![rhs], Some(parse_quote!({ Some(_A) })), None);
+            self.create_rule(
+                span,
+                sym_l,
+                vec![rhs],
+                Some(parse_quote!({ Some(_A) })),
+                None,
+            );
         }
     }
 
@@ -659,7 +698,10 @@ impl Pomelo {
                 let b = self.the_symbols.get(sp);
                 match &b.typ {
                     MultiTerminal(sub_sym) => {
-                        if let Some(prec) = sub_sym.iter().find_map(|msp| self.the_symbols.get(msp).precedence) {
+                        if let Some(prec) = sub_sym
+                            .iter()
+                            .find_map(|msp| self.the_symbols.get(msp).precedence)
+                        {
                             rp.prec_sym = Some(*sp);
                             rp.precedence = Some(prec);
                             break;
@@ -690,23 +732,24 @@ impl Pomelo {
                     let mut rtyped = rp
                         .rhs
                         .iter_mut()
-                        .filter(|SymbolAlias(symbol, _, _)|
-                                self.the_symbols.get(symbol)
-                                    .data_type
-                                    .is_some())
+                        .filter(|SymbolAlias(symbol, _, _)| {
+                            self.the_symbols.get(symbol).data_type.is_some()
+                        })
                         .collect::<Vec<_>>();
                     if let [SymbolAlias(_, _, alias)] = &mut rtyped[..] {
                         *alias = Some(parse_quote!(_A));
-                        rp.code = Some(parse_quote!({_A}));
+                        rp.code = Some(parse_quote!({ _A }));
                         continue;
                     }
                 }
-                return error_span(rp.lhs.1, "This rule has a typed LHS but no code to assign it"); //tested
+                return error_span(
+                    rp.lhs.1,
+                    "This rule has a typed LHS but no code to assign it",
+                ); //tested
             }
         }
         Ok(())
     }
-
 
     /* Find all nonterminals which will generate the empty string.
      ** Then go back and compute the first sets of every nonterminal.
@@ -719,7 +762,9 @@ impl Pomelo {
             for rp in &self.rules {
                 let rp = self.the_rules.get(rp);
                 let lhs = rp.lhs.0;
-                if self.the_symbols.get(lhs).is_lambda() { continue }
+                if self.the_symbols.get(lhs).is_lambda() {
+                    continue;
+                }
 
                 let mut all_lambda = true;
                 for SymbolAlias(sp, ..) in &rp.rhs {
@@ -730,7 +775,7 @@ impl Pomelo {
                     }
                 }
                 if all_lambda {
-                    if let NonTerminal{lambda, ..} = &mut self.the_symbols.get_mut(lhs).typ {
+                    if let NonTerminal { lambda, .. } = &mut self.the_symbols.get_mut(lhs).typ {
                         *lambda = true;
                         progress = true;
                     } else {
@@ -738,7 +783,9 @@ impl Pomelo {
                     }
                 }
             }
-            if !progress { break }
+            if !progress {
+                break;
+            }
         }
         //Now compute all first sets
         loop {
@@ -750,11 +797,17 @@ impl Pomelo {
                 for SymbolAlias(s2, ..) in &rp.rhs {
                     //First check if s1 and s2 are the same, or else s1.borrow_mut() will panic
                     if s1 == s2 {
-                        if !self.the_symbols.get(s1).is_lambda() { break }
+                        if !self.the_symbols.get(s1).is_lambda() {
+                            break;
+                        }
                         continue;
                     }
                     let b2 = self.the_symbols.get(s2);
-                    if let NonTerminal{ first_set: s1_first_set, .. } = &mut self.the_symbols.get_mut(s1).typ {
+                    if let NonTerminal {
+                        first_set: s1_first_set,
+                        ..
+                    } = &mut self.the_symbols.get_mut(s1).typ
+                    {
                         match &b2.typ {
                             Terminal => {
                                 progress |= s1_first_set.insert(b2.index);
@@ -766,17 +819,25 @@ impl Pomelo {
                                 }
                                 break;
                             }
-                            NonTerminal{ first_set: s2_first_set, lambda: b2_lambda, .. } => {
+                            NonTerminal {
+                                first_set: s2_first_set,
+                                lambda: b2_lambda,
+                                ..
+                            } => {
                                 let n1 = s1_first_set.len();
                                 s1_first_set.extend(s2_first_set);
                                 progress |= s1_first_set.len() > n1;
-                                if !b2_lambda { break }
+                                if !b2_lambda {
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
-            if !progress { break }
+            if !progress {
+                break;
+            }
         }
     }
 
@@ -795,7 +856,8 @@ impl Pomelo {
             let rp = self.the_rules.get_mut(rp);
             for SymbolAlias(r, span, ..) in &rp.rhs {
                 if sp == r {
-                    return error_span(*span, "start symbol on the RHS of a rule"); //tested
+                    return error_span(*span, "start symbol on the RHS of a rule");
+                    //tested
                 }
             }
         }
@@ -805,8 +867,12 @@ impl Pomelo {
         /* The basis configuration set for the first state
          ** is all rules which have the start symbol as their
          ** left-hand side */
-        let rules = self.the_symbols.get(sp).get_non_terminal_rules().map(|s| s.to_owned());
-        if let Some(rules) = rules { 
+        let rules = self
+            .the_symbols
+            .get(sp)
+            .get_non_terminal_rules()
+            .map(|s| s.to_owned());
+        if let Some(rules) = rules {
             for rp in rules {
                 self.the_rules.get_mut(rp).lhs_start = true;
 
@@ -874,9 +940,13 @@ impl Pomelo {
         let configs = self.the_states.get(state).configs.clone();
         for (icfp, cfp) in configs.iter().enumerate() {
             let cfp = self.the_configs.get(cfp);
-            if let CfgStatus::Complete = cfp.status { continue }/* Already used by inner loop */
-            if cfp.dot >= self.the_rules.get(cfp.rule).rhs.len() { continue }  /* Can't shift this config */
-            let SymbolAlias(sp, ..) = self.the_rules.get(cfp.rule).rhs[cfp.dot];       /* Symbol after the dot */
+            if let CfgStatus::Complete = cfp.status {
+                continue;
+            } /* Already used by inner loop */
+            if cfp.dot >= self.the_rules.get(cfp.rule).rhs.len() {
+                continue;
+            } /* Can't shift this config */
+            let SymbolAlias(sp, ..) = self.the_rules.get(cfp.rule).rhs[cfp.dot]; /* Symbol after the dot */
             let mut basis = Vec::new();
             drop(cfp);
 
@@ -889,16 +959,22 @@ impl Pomelo {
                 let dot;
                 {
                     let bcfp = self.the_configs.get(bcfp_);
-                    if let CfgStatus::Complete = bcfp.status { continue }   /* Already used */
-                    if bcfp.dot >= self.the_rules.get(bcfp.rule).rhs.len() { continue }    /* Can't shift this one */
-                    let SymbolAlias(bsp, ..) = self.the_rules.get(bcfp.rule).rhs[bcfp.dot];        /* Get symbol after dot */
-                    if bsp != sp { continue }                     /* Must be same as for "cfp" */
+                    if let CfgStatus::Complete = bcfp.status {
+                        continue;
+                    } /* Already used */
+                    if bcfp.dot >= self.the_rules.get(bcfp.rule).rhs.len() {
+                        continue;
+                    } /* Can't shift this one */
+                    let SymbolAlias(bsp, ..) = self.the_rules.get(bcfp.rule).rhs[bcfp.dot]; /* Get symbol after dot */
+                    if bsp != sp {
+                        continue;
+                    } /* Must be same as for "cfp" */
                     rule = bcfp.rule;
                     dot = bcfp.dot + 1;
                 }
                 let newcfg = self.add_config(&mut basis, rule, dot);
 
-                self.the_configs.get_mut(bcfp_).status = CfgStatus::Complete;                      /* Mark this config as used */
+                self.the_configs.get_mut(bcfp_).status = CfgStatus::Complete; /* Mark this config as used */
                 self.the_configs.get_mut(newcfg).bplp.push(bcfp_);
             }
 
@@ -915,7 +991,7 @@ impl Pomelo {
                         let detail = ActionDetail::Shift(newstp);
                         aps.push(RefCell::new(Action {
                             look_ahead: *ss,
-                            detail
+                            detail,
                         }));
                     }
                 }
@@ -923,7 +999,7 @@ impl Pomelo {
                     let detail = ActionDetail::Shift(newstp);
                     aps.push(RefCell::new(Action {
                         look_ahead: sp,
-                        detail
+                        detail,
                     }));
                 }
             }
@@ -995,7 +1071,7 @@ impl Pomelo {
     }
 
     /* Compute the reduce actions, and resolve conflicts.
-    */
+     */
     fn find_actions(&mut self) -> syn::Result<()> {
         /* Add all of the reduce actions
          ** A reduce action is added for each element of the followset of
@@ -1006,15 +1082,16 @@ impl Pomelo {
             let mut stp = self.the_states.get_mut(stp);
             for cfp in &stp.configs {
                 let cfp = self.the_configs.get(cfp);
-                if cfp.dot == self.the_rules.get(cfp.rule).rhs.len() { /* Is dot at extreme right? */
-                    for j in 0 .. self.num_terminals {
+                if cfp.dot == self.the_rules.get(cfp.rule).rhs.len() {
+                    /* Is dot at extreme right? */
+                    for j in 0..self.num_terminals {
                         if cfp.fws.contains(&j) {
                             /* Add a reduce action to the state "stp" which will reduce by the
                              ** rule "cfp->rp" if the lookahead symbol is "lemp->symbols[j]" */
                             let detail = ActionDetail::Reduce(cfp.rule);
                             aps.push(RefCell::new(Action {
                                 look_ahead: self.symbols[j],
-                                detail
+                                detail,
                             }));
                         }
                     }
@@ -1029,25 +1106,36 @@ impl Pomelo {
         /* Add to the first state (which is always the starting state of the
          ** finite state machine) an action to ACCEPT if the lookahead is the
          ** start nonterminal.  */
-        self.the_states.get_mut(self.states.first().unwrap()).actions.push(RefCell::new(Action {
-            look_ahead: sp,
-            detail: ActionDetail::Accept,
-        }));
+        self.the_states
+            .get_mut(self.states.first().unwrap())
+            .actions
+            .push(RefCell::new(Action {
+                look_ahead: sp,
+                detail: ActionDetail::Accept,
+            }));
 
         /* Resolve conflicts */
         let mut nconflict = 0;
         for stp in &self.states {
-            self.the_states.get_mut(stp).actions.sort_by(|a, b| action_cmp(&self.the_symbols, &self.the_states, &self.the_rules, a, b));
+            self.the_states.get_mut(stp).actions.sort_by(|a, b| {
+                action_cmp(&self.the_symbols, &self.the_states, &self.the_rules, a, b)
+            });
             let stp = self.the_states.get(stp);
             let len = stp.actions.len();
-            for i in 0 .. len {
+            for i in 0..len {
                 let ap = &stp.actions[i];
-                for j in i + 1 .. len {
+                for j in i + 1..len {
                     let nap = &stp.actions[j];
                     if ap.borrow().look_ahead == nap.borrow().look_ahead {
                         /* The two actions "ap" and "nap" have the same lookahead.
                          ** Figure out which one should be used */
-                        nconflict += if self.resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut()) { 1 } else { 0 };
+                        nconflict += if self
+                            .resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut())
+                        {
+                            1
+                        } else {
+                            0
+                        };
                     } else {
                         break;
                     }
@@ -1055,7 +1143,6 @@ impl Pomelo {
             }
         }
         self.nconflict += nconflict;
-
 
         /* Report an error for each rule that can never be reduced. */
         for stp in &self.states {
@@ -1091,23 +1178,19 @@ impl Pomelo {
     fn resolve_conflict(&self, apx: &mut Action, apy: &mut Action) -> bool {
         use ActionDetail::*;
         let (err, ax, ay) = match (apx.detail.clone(), apy.detail.clone()) {
-            (Shift(x), Shift(y)) => {
-                (true, Shift(x), SSConflict(y))
-            }
+            (Shift(x), Shift(y)) => (true, Shift(x), SSConflict(y)),
             /* Use operator associativity to break tie */
             (Shift(x), Reduce(y)) => {
                 let precx = self.the_symbols.get(apx.look_ahead).precedence;
                 let precy = self.the_rules.get(y).precedence;
 
                 match (precx, precy) {
-                    (Some(px), Some(py)) => {
-                        match precedence_cmp(px, py) {
-                            Ordering::Less => (false, SHResolved(x), Reduce(y)),
-                            Ordering::Equal => (false, Error, Reduce(y)),
-                            Ordering::Greater => (false, Shift(x), RDResolved(y)),
-                        }
-                    }
-                    _ => (true, Shift(x), SRConflict(y))
+                    (Some(px), Some(py)) => match precedence_cmp(px, py) {
+                        Ordering::Less => (false, SHResolved(x), Reduce(y)),
+                        Ordering::Equal => (false, Error, Reduce(y)),
+                        Ordering::Greater => (false, Shift(x), RDResolved(y)),
+                    },
+                    _ => (true, Shift(x), SRConflict(y)),
                 }
             }
             (Reduce(x), Reduce(y)) => {
@@ -1115,14 +1198,12 @@ impl Pomelo {
                 let precy = self.the_rules.get(y).precedence;
 
                 match (precx, precy) {
-                    (Some(px), Some(py)) => {
-                        match precedence_cmp(px, py) {
-                            Ordering::Less => (false, RDResolved(x), Reduce(y)),
-                            Ordering::Equal => (true, Reduce(x), RRConflict(y)),
-                            Ordering::Greater => (false, Reduce(x), RDResolved(y)),
-                        }
-                    }
-                    _ => (true, Reduce(x), RRConflict(y))
+                    (Some(px), Some(py)) => match precedence_cmp(px, py) {
+                        Ordering::Less => (false, RDResolved(x), Reduce(y)),
+                        Ordering::Equal => (true, Reduce(x), RRConflict(y)),
+                        Ordering::Greater => (false, Reduce(x), RDResolved(y)),
+                    },
+                    _ => (true, Reduce(x), RRConflict(y)),
                 }
             }
             /* The REDUCE/SHIFT case cannot happen because SHIFTs come before
@@ -1162,19 +1243,25 @@ impl Pomelo {
                             }
                         }
                         (Reduce(rp), _) => {
-                            if self.the_rules.get(rp).lhs_start { continue }
-                            if rbest.as_ref() == Some(rp) { continue }
+                            if self.the_rules.get(rp).lhs_start {
+                                continue;
+                            }
+                            if rbest.as_ref() == Some(rp) {
+                                continue;
+                            }
                             let mut n = 1;
                             for ap2 in &stp.actions[iap + 1..] {
                                 let ap2 = ap2.borrow();
                                 match &ap2.detail {
                                     Reduce(rp2) => {
-                                        if rbest.as_ref() == Some(rp2) { continue }
+                                        if rbest.as_ref() == Some(rp2) {
+                                            continue;
+                                        }
                                         if rp2 == rp {
                                             n += 1;
                                         }
                                     }
-                                    _ => continue
+                                    _ => continue,
                                 }
                             }
                             if n > nbest {
@@ -1190,7 +1277,9 @@ impl Pomelo {
                  ** is not at least 1 or if the wildcard token is a possible
                  ** lookahead.
                  */
-                if nbest < 1 || uses_wildcard { continue }
+                if nbest < 1 || uses_wildcard {
+                    continue;
+                }
                 let rbest = rbest.unwrap();
 
                 /* Combine matching REDUCE actions into a single default */
@@ -1210,10 +1299,8 @@ impl Pomelo {
                     for ap2 in &stp.actions[iap + 1..] {
                         let mut ap2 = ap2.borrow_mut();
                         let unuse = match &ap2.detail {
-                            Reduce(rp) => {
-                                *rp == rbest
-                            }
-                            _ => false
+                            Reduce(rp) => *rp == rbest,
+                            _ => false,
                         };
                         if unuse {
                             ap2.detail = NotUsed;
@@ -1221,7 +1308,9 @@ impl Pomelo {
                     }
                 }
             }
-            self.the_states.get_mut(stp).actions.sort_by(|a, b| action_cmp(&self.the_symbols, &self.the_states, &self.the_rules, a, b));
+            self.the_states.get_mut(stp).actions.sort_by(|a, b| {
+                action_cmp(&self.the_symbols, &self.the_states, &self.the_rules, a, b)
+            });
         }
     }
 
@@ -1231,7 +1320,6 @@ impl Pomelo {
      */
     fn resort_states(&mut self) {
         for stp in &self.states {
-
             let mut n_tkn_act = 0;
             let mut n_nt_act = 0;
             let mut i_dflt = self.states.len() + self.rules.len();
@@ -1255,7 +1343,7 @@ impl Pomelo {
             stp.n_nt_act = n_nt_act;
             stp.i_dflt = i_dflt;
         }
-        //Take states out of self to be able to use `self` 
+        //Take states out of self to be able to use `self`
         let mut states = std::mem::take(&mut self.states);
         states[1..].sort_by(|a, b| self.state_resort_cmp(*a, *b));
         for (i, stp) in states.iter().enumerate() {
@@ -1271,9 +1359,7 @@ impl Pomelo {
     fn compute_action(&self, ap: &Action) -> Option<usize> {
         use ActionDetail::*;
         let act = match &ap.detail {
-            Shift(stp) => {
-                self.the_states.get(stp).state_num
-            }
+            Shift(stp) => self.the_states.get(stp).state_num,
             Reduce(rp) => self.the_rules.get(rp).index + self.states.len(),
             Error => self.states.len() + self.rules.len(),
             Accept => self.states.len() + self.rules.len() + 1,
@@ -1326,10 +1412,22 @@ impl Pomelo {
                 let sp = self.the_symbols.get(ap.look_ahead);
                 match &ap.detail {
                     Shift(stp) => {
-                        write!(state_info, "{:>30} shift  {}", sp.name, self.the_states.get(stp).state_num).unwrap();
+                        write!(
+                            state_info,
+                            "{:>30} shift  {}",
+                            sp.name,
+                            self.the_states.get(stp).state_num
+                        )
+                        .unwrap();
                     }
                     Reduce(rp) => {
-                        write!(state_info, "{:>30} reduce {}", sp.name, self.the_rules.get(rp).index).unwrap();
+                        write!(
+                            state_info,
+                            "{:>30} reduce {}",
+                            sp.name,
+                            self.the_rules.get(rp).index
+                        )
+                        .unwrap();
                     }
                     Accept => {
                         write!(state_info, "{:>30} accept", sp.name).unwrap();
@@ -1338,16 +1436,40 @@ impl Pomelo {
                         write!(state_info, "{:>30} error", sp.name).unwrap();
                     }
                     SRConflict(rp) | RRConflict(rp) => {
-                        write!(state_info, "{:>30} reduce {:<3} ** Parsing conflict **", sp.name, self.the_rules.get(rp).index).unwrap();
+                        write!(
+                            state_info,
+                            "{:>30} reduce {:<3} ** Parsing conflict **",
+                            sp.name,
+                            self.the_rules.get(rp).index
+                        )
+                        .unwrap();
                     }
                     SSConflict(stp) => {
-                        write!(state_info, "{:>30} shift  {:<3} ** Parsing conflict **", sp.name, self.the_states.get(stp).state_num).unwrap();
+                        write!(
+                            state_info,
+                            "{:>30} shift  {:<3} ** Parsing conflict **",
+                            sp.name,
+                            self.the_states.get(stp).state_num
+                        )
+                        .unwrap();
                     }
                     SHResolved(stp) => {
-                        write!(state_info, "{:>30} shift  {:<3} -- dropped by precedence", sp.name, self.the_states.get(stp).state_num).unwrap();
+                        write!(
+                            state_info,
+                            "{:>30} shift  {:<3} -- dropped by precedence",
+                            sp.name,
+                            self.the_states.get(stp).state_num
+                        )
+                        .unwrap();
                     }
                     RDResolved(rp) => {
-                        write!(state_info, "{:>30} reduce {:<3} -- dropped by precedence", sp.name, self.the_rules.get(rp).index).unwrap();
+                        write!(
+                            state_info,
+                            "{:>30} reduce {:<3} -- dropped by precedence",
+                            sp.name,
+                            self.the_rules.get(rp).index
+                        )
+                        .unwrap();
                     }
                     _ => continue,
                 }
@@ -1356,7 +1478,11 @@ impl Pomelo {
             writeln!(state_info).unwrap();
         }
         if self.verbose {
-            writeln!(state_info, "----------------------------------------------------").unwrap();
+            writeln!(
+                state_info,
+                "----------------------------------------------------"
+            )
+            .unwrap();
             writeln!(state_info, "Symbols:").unwrap();
             for (i, sp) in self.symbols.iter().enumerate() {
                 let sp = self.the_symbols.get(sp);
@@ -1404,11 +1530,19 @@ impl Pomelo {
         while i < cur.len() {
             //println!("I = {} < {}", i, cur.len());
             let cfp = cur[i];
-            let rhs = self.the_rules.get(self.the_configs.get(cfp).rule).rhs.clone();
+            let rhs = self
+                .the_rules
+                .get(self.the_configs.get(cfp).rule)
+                .rhs
+                .clone();
             let dot = self.the_configs.get(cfp).dot;
             if dot < rhs.len() {
                 let SymbolAlias(sp, span, ..) = &rhs[dot];
-                let rules = self.the_symbols.get(sp).get_non_terminal_rules().map(|s| s.to_owned());
+                let rules = self
+                    .the_symbols
+                    .get(sp)
+                    .get_non_terminal_rules()
+                    .map(|s| s.to_owned());
                 if let Some(rules) = rules {
                     if rules.is_empty() && *sp != self.error_symbol {
                         return error_span(*span, "Nonterminal has no rules"); //tested
@@ -1416,7 +1550,7 @@ impl Pomelo {
                     for newrp in rules {
                         let newcfp = self.add_config(&mut cur, newrp.clone(), 0);
                         let mut broken = false;
-                        for SymbolAlias(xsp, ..) in &rhs[dot + 1 ..] {
+                        for SymbolAlias(xsp, ..) in &rhs[dot + 1..] {
                             let xsp = self.the_symbols.get(xsp);
                             match &xsp.typ {
                                 Terminal => {
@@ -1433,7 +1567,9 @@ impl Pomelo {
                                     broken = true;
                                     break;
                                 }
-                                NonTerminal{ first_set, lambda, ..} => {
+                                NonTerminal {
+                                    first_set, lambda, ..
+                                } => {
                                     let mut newcfp = self.the_configs.get_mut(newcfp);
                                     newcfp.fws.extend(first_set);
                                     if !lambda {
@@ -1456,7 +1592,9 @@ impl Pomelo {
     }
 
     fn add_config(&mut self, cfgs: &mut Vec<ConfigId>, rule: RuleId, dot: usize) -> ConfigId {
-        match cfgs.iter().position(|x| config_cmp_key(self, *x, self.the_rules.get(rule).index, dot) == Ordering::Equal) {
+        match cfgs.iter().position(|x| {
+            config_cmp_key(self, *x, self.the_rules.get(rule).index, dot) == Ordering::Equal
+        }) {
             Some(i) => cfgs[i],
             None => {
                 let c = Config {
@@ -1494,8 +1632,10 @@ impl Pomelo {
                     //If asked for a MultiTerminal, but it is a Terminal, convert it
                     if let NewSymbolType::MultiTerminal = typ {
                         match b.typ {
-                            MultiTerminal{..} => (),
-                            Terminal => { b.typ = MultiTerminal(Vec::new()); }
+                            MultiTerminal { .. } => (),
+                            Terminal => {
+                                b.typ = MultiTerminal(Vec::new());
+                            }
                             _ => unreachable!(),
                         }
                     }
@@ -1506,11 +1646,11 @@ impl Pomelo {
         let typ = match typ {
             NewSymbolType::Terminal => Terminal,
             NewSymbolType::NonTerminal => NonTerminal {
-                    rules: Vec::new(),
-                    first_set: RuleSet::new(),
-                    lambda: false,
-                },
-            NewSymbolType::MultiTerminal => MultiTerminal(Vec::new())
+                rules: Vec::new(),
+                first_set: RuleSet::new(),
+                lambda: false,
+            },
+            NewSymbolType::MultiTerminal => MultiTerminal(Vec::new()),
         };
         let symbol = Symbol {
             name: name.to_string(),
@@ -1582,12 +1722,16 @@ impl Pomelo {
                 } else if is_nonterminal_ident(&id) {
                     NewSymbolType::NonTerminal
                 } else {
-                    return error_span(id.span(), "Symbol must start with uppercase or lowercase letter"); //tested
+                    return error_span(
+                        id.span(),
+                        "Symbol must start with uppercase or lowercase letter",
+                    ); //tested
                 };
                 let sp = self.symbol_new_t(&id, nst);
                 let mut sp = self.the_symbols.get_mut(sp);
                 if sp.data_type.is_some() {
-                    return error_span(id.span(), "Symbol type already defined"); //tested
+                    return error_span(id.span(), "Symbol type already defined");
+                    //tested
                 }
                 sp.data_type = Some(ty);
             }
@@ -1595,25 +1739,35 @@ impl Pomelo {
                 pdt.precedence += 1;
                 for token in ids {
                     if !is_terminal_ident(&token) {
-                        return error_span(token.span(), "Precedence cannot be assigned to a non-terminal"); //tested
+                        return error_span(
+                            token.span(),
+                            "Precedence cannot be assigned to a non-terminal",
+                        ); //tested
                     }
                     let sp = self.symbol_new_t(&token, NewSymbolType::Terminal);
                     let mut b = self.the_symbols.get_mut(sp);
                     match b.precedence {
-                        Some(_) => return error_span(token.span(), "Symbol has already been given a precedence"), //tested
+                        Some(_) => {
+                            return error_span(
+                                token.span(),
+                                "Symbol has already been given a precedence",
+                            )
+                        } //tested
                         None => b.precedence = Some(Precedence(pdt.precedence, a)),
                     }
                 }
             }
             Decl::DefaultType(ty) => {
                 if self.default_type.is_some() {
-                    return error_span(ty.span(), "Default type already defined"); //tested
+                    return error_span(ty.span(), "Default type already defined");
+                    //tested
                 }
                 self.default_type = Some(ty);
             }
             Decl::ExtraArgument(ty) => {
                 if self.arg.is_some() {
-                    return error_span(ty.span(), "Extra argument type already defined"); //tested
+                    return error_span(ty.span(), "Extra argument type already defined");
+                    //tested
                 }
                 self.arg = Some(ty);
             }
@@ -1625,10 +1779,12 @@ impl Pomelo {
             }
             Decl::StartSymbol(id) => {
                 if self.start.is_some() {
-                    return error_span(id.span(), "Start symbol already defined"); //tested
+                    return error_span(id.span(), "Start symbol already defined");
+                    //tested
                 }
                 if !is_nonterminal_ident(&id) {
-                    return error_span(id.span(), "Start symbol must be a non-terminal"); //tested
+                    return error_span(id.span(), "Start symbol must be a non-terminal");
+                    //tested
                 }
                 self.start = Some(self.symbol_new_t(&id, NewSymbolType::NonTerminal));
             }
@@ -1640,12 +1796,14 @@ impl Pomelo {
                 let mut has_fallback = self.has_fallback;
                 for id in ids {
                     if !is_terminal_ident(&id) {
-                        return error_span(id.span(), "Fallback ids must be tokens"); //tested
+                        return error_span(id.span(), "Fallback ids must be tokens");
+                        //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                     let mut b = self.the_symbols.get_mut(sp);
                     if b.fallback.is_some() {
-                        return error_span(id.span(), "More than one fallback assigned to token"); //tested
+                        return error_span(id.span(), "More than one fallback assigned to token");
+                        //tested
                     }
                     b.fallback = Some(fallback);
                     has_fallback = true;
@@ -1664,12 +1822,14 @@ impl Pomelo {
             }
             Decl::TokenClass(tk, ids) => {
                 if !is_terminal_ident(&tk) {
-                    return error_span(tk.span(), "token_class must be a token"); //tested
+                    return error_span(tk.span(), "token_class must be a token");
+                    //tested
                 }
                 let tk = self.symbol_new_t(&tk, NewSymbolType::MultiTerminal);
                 for id in ids {
                     if !is_terminal_ident(&id) {
-                        return error_span(id.span(), "token_class ids must be tokens"); //tested
+                        return error_span(id.span(), "token_class ids must be tokens");
+                        //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
                     if let MultiTerminal(sub_sym) = &mut self.the_symbols.get_mut(tk).typ {
@@ -1687,7 +1847,8 @@ impl Pomelo {
             }
             Decl::Parser(e) => {
                 if self.parser_struct.is_some() {
-                    return error_span(e.span(), "parser struct already defined"); //tested
+                    return error_span(e.span(), "parser struct already defined");
+                    //tested
                 }
                 self.parser_struct = Some(e);
             }
@@ -1707,63 +1868,82 @@ impl Pomelo {
             Decl::Verbose => {
                 self.verbose = true;
             }
-            Decl::Rule{ lhs, rhs, action, prec } => {
+            Decl::Rule {
+                lhs,
+                rhs,
+                action,
+                prec,
+            } => {
                 let lhs_span = lhs.span();
                 if !is_nonterminal_ident(&lhs) {
-                    return error_span(lhs_span, "LHS of rule must be non-terminal"); //tested
+                    return error_span(lhs_span, "LHS of rule must be non-terminal");
+                    //tested
                 }
                 let lhs = self.symbol_new_t_span(&lhs, NewSymbolType::NonTerminal);
-                let rhs = rhs.into_iter().map(|(toks, optional, alias)| {
-                    let SymbolSpan(tok, span) = if toks.len() == 1 {
-                        let tok = toks.into_iter().next().unwrap();
-                        let nst = if is_terminal_ident(&tok) {
-                            NewSymbolType::Terminal
-                        } else if is_nonterminal_ident(&tok) {
-                            NewSymbolType::NonTerminal
-                        } else {
-                            return error_span(tok.span(), "Symbol must start with uppercase or lowercase letter"); //tested
-                        };
-                        if optional {
-                            let sym_r = self.symbol_new_t(&tok, nst);
-                            if let Some(sym_l) = self.optional_tokens.get(&sym_r) {
-                                sym_l.clone()
+                let rhs = rhs
+                    .into_iter()
+                    .map(|(toks, optional, alias)| {
+                        let SymbolSpan(tok, span) = if toks.len() == 1 {
+                            let tok = toks.into_iter().next().unwrap();
+                            let nst = if is_terminal_ident(&tok) {
+                                NewSymbolType::Terminal
+                            } else if is_nonterminal_ident(&tok) {
+                                NewSymbolType::NonTerminal
                             } else {
-                                let sym_l = self.symbol_new_s(&format!("_{}", self.optional_tokens.len()), NewSymbolType::NonTerminal);
-                                let sym_l = SymbolSpan(sym_l, tok.span());
-                                self.optional_tokens.insert(sym_r, sym_l.clone());
-                                sym_l
+                                return error_span(
+                                    tok.span(),
+                                    "Symbol must start with uppercase or lowercase letter",
+                                ); //tested
+                            };
+                            if optional {
+                                let sym_r = self.symbol_new_t(&tok, nst);
+                                if let Some(sym_l) = self.optional_tokens.get(&sym_r) {
+                                    sym_l.clone()
+                                } else {
+                                    let sym_l = self.symbol_new_s(
+                                        &format!("_{}", self.optional_tokens.len()),
+                                        NewSymbolType::NonTerminal,
+                                    );
+                                    let sym_l = SymbolSpan(sym_l, tok.span());
+                                    self.optional_tokens.insert(sym_r, sym_l.clone());
+                                    sym_l
+                                }
+                            } else {
+                                self.symbol_new_t_span(&tok, nst)
                             }
                         } else {
-                            self.symbol_new_t_span(&tok, nst)
-                        }
-                    } else {
-                        let mt = self.symbol_new_s("", NewSymbolType::MultiTerminal);
-                        let mut ss = Vec::new();
-                        let span = toks[0].span(); //TODO: extend span
-                        for tok in toks {
-                            if !is_terminal_ident(&tok) {
-                                return error_span(tok.span(), "Cannot form a compound containing a non-terminal"); //tested
+                            let mt = self.symbol_new_s("", NewSymbolType::MultiTerminal);
+                            let mut ss = Vec::new();
+                            let span = toks[0].span(); //TODO: extend span
+                            for tok in toks {
+                                if !is_terminal_ident(&tok) {
+                                    return error_span(
+                                        tok.span(),
+                                        "Cannot form a compound containing a non-terminal",
+                                    ); //tested
+                                }
+                                ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
                             }
-                            ss.push(self.symbol_new_t(&tok, NewSymbolType::Terminal));
-                        }
-                        if let MultiTerminal(sub_sym) = &mut self.the_symbols.get_mut(mt).typ {
-                            sub_sym.extend(ss);
-                        } else {
-                            unreachable!();
-                        }
-                        SymbolSpan(mt, span)
-                    };
-                    Ok(SymbolAlias(tok, span, alias))
-                }).collect::<syn::Result<Vec<_>>>()?;
+                            if let MultiTerminal(sub_sym) = &mut self.the_symbols.get_mut(mt).typ {
+                                sub_sym.extend(ss);
+                            } else {
+                                unreachable!();
+                            }
+                            SymbolSpan(mt, span)
+                        };
+                        Ok(SymbolAlias(tok, span, alias))
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
 
                 let prec_sym = match &prec {
                     Some(id) => {
                         if !is_terminal_ident(id) {
-                            return error_span(id.span(), "The precedence symbol must be a token"); //tested
+                            return error_span(id.span(), "The precedence symbol must be a token");
+                            //tested
                         }
                         Some(self.symbol_new_t(id, NewSymbolType::Terminal))
                     }
-                    None => None
+                    None => None,
                 };
 
                 self.create_rule(lhs_span, lhs, rhs, action, prec_sym);
@@ -1772,7 +1952,14 @@ impl Pomelo {
         Ok(())
     }
 
-    fn create_rule(&mut self, span: Span, lhs: SymbolSpan, rhs: Vec<SymbolAlias>, code: Option<Block>, prec_sym: Option<SymbolId>) {
+    fn create_rule(
+        &mut self,
+        span: Span,
+        lhs: SymbolSpan,
+        rhs: Vec<SymbolAlias>,
+        code: Option<Block>,
+        prec_sym: Option<SymbolId>,
+    ) {
         let index = self.rules.len();
         let rule = Rule {
             span,
@@ -1788,7 +1975,7 @@ impl Pomelo {
         let id = self.the_rules.push(rule);
         let rule = self.the_rules.get_mut(id);
 
-        if let NonTerminal { rules, ..} = &mut self.the_symbols.get_mut(rule.lhs.0).typ {
+        if let NonTerminal { rules, .. } = &mut self.the_symbols.get_mut(rule.lhs.0).typ {
             rules.push(id);
         } else {
             unreachable!("lhs is not a non-terminal");
@@ -1798,7 +1985,7 @@ impl Pomelo {
 
     fn generate_source(&mut self) -> syn::Result<TokenStream> {
         let mut src = TokenStream::new();
-        src.extend(quote!{
+        src.extend(quote! {
             #![allow(dead_code)]
             #![allow(unreachable_code)]
             #![allow(unused_variables)]
@@ -1817,7 +2004,8 @@ impl Pomelo {
         let yywildcard = if let Some(wildcard) = self.wildcard {
             let wildcard = self.the_symbols.get(wildcard);
             if let Some(dt) = &wildcard.data_type {
-                return error_span(dt.span(), "Wildcard token must not have a type"); //tested
+                return error_span(dt.span(), "Wildcard token must not have a type");
+                //tested
             }
             wildcard.index
         } else {
@@ -1831,7 +2019,7 @@ impl Pomelo {
         };
         let yystacklimit = self.stack_limit;
 
-        src.extend(quote!{
+        src.extend(quote! {
             const YYNOCODE: i32 = #yynocode;
             const YYWILDCARD: #yycodetype = #yywildcard;
             type YYStack<T> = #yystacktype<T>;
@@ -1850,9 +2038,9 @@ impl Pomelo {
 
         for sp in &self.symbols {
             if let Some(wildcard) = &self.wildcard {
-               if sp == wildcard {
-                   continue;
-               }
+                if sp == wildcard {
+                    continue;
+                }
             }
 
             let mut sp = self.the_symbols.get_mut(sp);
@@ -1866,12 +2054,8 @@ impl Pomelo {
                     let first = self.the_symbols.get(ss.first().unwrap());
                     first.data_type.clone()
                 }
-                SymbolType::Terminal => {
-                    sp.data_type.clone()
-                }
-                SymbolType::NonTerminal{..} => {
-                    sp.data_type.clone()
-                }
+                SymbolType::Terminal => sp.data_type.clone(),
+                SymbolType::NonTerminal { .. } => sp.data_type.clone(),
             };
 
             sp.data_type = data_type.or_else(|| self.default_type.clone());
@@ -1884,14 +2068,19 @@ impl Pomelo {
             };
         }
 
-        let mut yytoken = self.token_enum.
-            clone().
-            unwrap_or_else(|| parse_quote!{ pub enum Token{} });
+        let mut yytoken = self
+            .token_enum
+            .clone()
+            .unwrap_or_else(|| parse_quote! { pub enum Token{} });
 
         if !yytoken.variants.is_empty() {
-            return error_span(yytoken.variants.span(), "Token enum declaration must be empty"); //tested
+            return error_span(
+                yytoken.variants.span(),
+                "Token enum declaration must be empty",
+            ); //tested
         }
-        let (yy_generics_impl_token, yy_generics_token, yy_generics_where_token) = yytoken.generics.split_for_impl();
+        let (yy_generics_impl_token, yy_generics_token, yy_generics_where_token) =
+            yytoken.generics.split_for_impl();
 
         //If %parser is not used, then use a default Parser with the same generics as the Token
         let mut yyparser = self.parser_struct.
@@ -1899,12 +2088,14 @@ impl Pomelo {
             unwrap_or_else(|| parse_quote!{ pub struct Parser #yy_generics_impl_token #yy_generics_where_token { } });
 
         if let Some(f) = yyparser.fields.iter().next() {
-            return error_span(f.span(), "Parser struct declaration must be empty"); //tested
+            return error_span(f.span(), "Parser struct declaration must be empty");
+            //tested
         }
 
         for g in yytoken.generics.params.iter() {
             if !yyparser.generics.params.iter().any(|p| p == g) {
-                return error_span(g.span(), "Generic parameter in Token is not in Parser"); //tested
+                return error_span(g.span(), "Generic parameter in Token is not in Parser");
+                //tested
             }
         }
         let (yy_generics_impl, yy_generics, yy_generics_where) = yyparser.generics.split_for_impl();
@@ -1944,7 +2135,6 @@ impl Pomelo {
             }
         ));
 
-
         let error_symbol = self.the_symbols.get(self.error_symbol);
         let yynstate = Literal::usize_unsuffixed(self.states.len());
         let yynrule = Literal::usize_unsuffixed(self.rules.len());
@@ -1960,7 +2150,6 @@ impl Pomelo {
             const YYNRULE: i32 = #yynrule;
             const YYERRORSYMBOL: i32 = #yyerrorsymbol;
         ));
-
 
         /* Generate the action table and its associates:
          **
@@ -2006,12 +2195,16 @@ impl Pomelo {
         for a in &ax {
             let mut actset = ActionSet::new();
 
-            if a.n_action == 0 { continue }
+            if a.n_action == 0 {
+                continue;
+            }
             if a.is_tkn {
                 for ap in &self.the_states.get(a.stp).actions {
                     let ap = ap.borrow();
                     let sp = self.the_symbols.get(ap.look_ahead);
-                    if sp.index >= self.num_terminals { continue }
+                    if sp.index >= self.num_terminals {
+                        continue;
+                    }
                     match self.compute_action(&ap) {
                         None => continue,
                         Some(action) => actset.add_action(sp.index, action),
@@ -2026,8 +2219,12 @@ impl Pomelo {
                 for ap in &self.the_states.get(a.stp).actions {
                     let ap = ap.borrow();
                     let sp = self.the_symbols.get(ap.look_ahead);
-                    if sp.index < self.num_terminals { continue }
-                    if sp.index == self.default_index { continue }
+                    if sp.index < self.num_terminals {
+                        continue;
+                    }
+                    if sp.index == self.default_index {
+                        continue;
+                    }
                     //sp is a non-default NonTerminal
                     match self.compute_action(&ap) {
                         None => continue,
@@ -2047,7 +2244,7 @@ impl Pomelo {
         let mut token_matches = Vec::new();
         let mut token_builds = Vec::new();
         let mut token_extra = Vec::new();
-        for i in 1 .. self.num_terminals {
+        for i in 1..self.num_terminals {
             let s = self.the_symbols.get(self.symbols[i]);
             let i = i as i32;
             let name = Ident::new(&s.name, Span::call_site());
@@ -2064,7 +2261,7 @@ impl Pomelo {
                             token_extra.push(quote!(Token::#name((e, _)) => e));
                         }
                     }
-                    Fields::Unnamed( parse_quote!{ (#dt) })
+                    Fields::Unnamed(parse_quote! { (#dt) })
                 }
                 None => {
                     token_matches.push(quote!(Token::#name => (#i, YYMinorType::#yydt(()))));
@@ -2124,88 +2321,114 @@ impl Pomelo {
                 }
             ));
         }
-        let yy_action = acttab.a_action.iter().map(|ac| {
-                match ac {
-                    None => (self.states.len() + self.rules.len() + 2) as i32,
-                    Some(a) => a.action as i32
-                }
-            }).map(Literal::i32_unsuffixed);
+        let yy_action = acttab
+            .a_action
+            .iter()
+            .map(|ac| match ac {
+                None => (self.states.len() + self.rules.len() + 2) as i32,
+                Some(a) => a.action as i32,
+            })
+            .map(Literal::i32_unsuffixed);
         let yy_action_len = yy_action.len();
         src.extend(quote!(static YY_ACTION: [i32; #yy_action_len] = [ #(#yy_action),* ];));
 
         /* Output the yy_lookahead table */
-        let yy_lookahead = acttab.a_action.iter().map(|ac| {
-                match ac {
-                    None => self.default_index,
-                    Some(a) => a.lookahead,
-                }
-            }).map(Literal::usize_unsuffixed);
+        let yy_lookahead = acttab
+            .a_action
+            .iter()
+            .map(|ac| match ac {
+                None => self.default_index,
+                Some(a) => a.lookahead,
+            })
+            .map(Literal::usize_unsuffixed);
         let yy_lookahead_len = yy_lookahead.len();
-        src.extend(quote!(static YY_LOOKAHEAD: [#yycodetype; #yy_lookahead_len] = [ #(#yy_lookahead),* ];));
+        src.extend(
+            quote!(static YY_LOOKAHEAD: [#yycodetype; #yy_lookahead_len] = [ #(#yy_lookahead),* ];),
+        );
 
         /* Output the yy_shift_ofst[] table */
-        let n = self.states.iter().rposition(|st|
-                        self.the_states.get(st).i_tkn_ofst.is_some()
-                    ).unwrap();
+        let n = self
+            .states
+            .iter()
+            .rposition(|st| self.the_states.get(st).i_tkn_ofst.is_some())
+            .unwrap();
         let yy_shift_use_dflt = min_tkn_ofst - 1;
         src.extend(quote!(const YY_SHIFT_USE_DFLT: i32 = #yy_shift_use_dflt;));
         src.extend(quote!(const YY_SHIFT_COUNT: i32 = #n as i32;));
         src.extend(quote!(const YY_SHIFT_MIN: i32 = #min_tkn_ofst;));
         src.extend(quote!(const YY_SHIFT_MAX: i32 = #max_tkn_ofst;));
         let yy_shift_ofst_type = minimum_signed_type(max_tkn_ofst as usize);
-        let yy_shift_ofst = self.states[0..=n].iter().map(|stp| {
+        let yy_shift_ofst = self.states[0..=n]
+            .iter()
+            .map(|stp| {
                 let stp = self.the_states.get(stp);
                 stp.i_tkn_ofst.unwrap_or(min_tkn_ofst - 1)
-            }).map(Literal::i32_unsuffixed);
+            })
+            .map(Literal::i32_unsuffixed);
         let yy_shift_ofst_len = yy_shift_ofst.len();
         src.extend(quote!(static YY_SHIFT_OFST: [#yy_shift_ofst_type; #yy_shift_ofst_len] = [ #(#yy_shift_ofst),* ];));
 
         /* Output the yy_reduce_ofst[] table */
-        let n = self.states.iter().rposition(|st|
-                        self.the_states.get(st).i_nt_ofst.is_some()
-                    ).unwrap();
+        let n = self
+            .states
+            .iter()
+            .rposition(|st| self.the_states.get(st).i_nt_ofst.is_some())
+            .unwrap();
         let yy_reduce_use_dflt = min_nt_ofst - 1;
         src.extend(quote!(const YY_REDUCE_USE_DFLT: i32 = #yy_reduce_use_dflt;));
         src.extend(quote!(const YY_REDUCE_COUNT: i32 = #n as i32;));
         src.extend(quote!(const YY_REDUCE_MIN: i32 = #min_nt_ofst;));
         src.extend(quote!(const YY_REDUCE_MAX: i32 = #max_nt_ofst;));
         let yy_reduce_ofst_type = minimum_signed_type(max_nt_ofst as usize);
-        let yy_reduce_ofst = self.states[0..=n].iter().map(|stp| {
+        let yy_reduce_ofst = self.states[0..=n]
+            .iter()
+            .map(|stp| {
                 let stp = self.the_states.get(stp);
                 stp.i_nt_ofst.unwrap_or(min_nt_ofst - 1)
-            }).map(Literal::i32_unsuffixed);
+            })
+            .map(Literal::i32_unsuffixed);
         let yy_reduce_ofst_len = yy_reduce_ofst.len();
         src.extend(quote!(static YY_REDUCE_OFST: [#yy_reduce_ofst_type; #yy_reduce_ofst_len] = [ #(#yy_reduce_ofst),* ];));
 
-        let yy_default = self.states.iter().map(|stp| {
-                self.the_states.get(stp).i_dflt
-            }).map(Literal::usize_unsuffixed);
+        let yy_default = self
+            .states
+            .iter()
+            .map(|stp| self.the_states.get(stp).i_dflt)
+            .map(Literal::usize_unsuffixed);
         let yy_default_len = yy_default.len();
-        src.extend(quote!(static YY_DEFAULT: [#yyactiontype; #yy_default_len] = [ #(#yy_default),* ];));
+        src.extend(
+            quote!(static YY_DEFAULT: [#yyactiontype; #yy_default_len] = [ #(#yy_default),* ];),
+        );
 
         /* Generate the table of fallback tokens. */
-        let mx = self.symbols.iter().rposition(|sy|
-                        self.the_symbols.get(sy).fallback.is_some()
-                    ).map_or(0, |x| x + 1);
-        let yy_fallback = self.symbols[0..mx].iter().map(|p| {
+        let mx = self
+            .symbols
+            .iter()
+            .rposition(|sy| self.the_symbols.get(sy).fallback.is_some())
+            .map_or(0, |x| x + 1);
+        let yy_fallback = self.symbols[0..mx]
+            .iter()
+            .map(|p| {
                 let p = self.the_symbols.get(p);
                 match &p.fallback {
-                    None => {
-                        Ok(0)
-                    }
+                    None => Ok(0),
                     Some(fb) => {
                         let fb = self.the_symbols.get(fb);
                         match (fb.dt_num, p.dt_num) {
                             (0, _) => {}
                             (fdt, pdt) if fdt == pdt => {}
                             _ => {
-                                return error_span(fb.data_type.span(), "Fallback token must have the same type or no type at all"); //tested
+                                return error_span(
+                                    fb.data_type.span(),
+                                    "Fallback token must have the same type or no type at all",
+                                ); //tested
                             }
                         }
                         Ok(fb.index as i32)
                     }
                 }
-            }).collect::<Result<Vec<_>,_>>()?;
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let yy_fallback_len = yy_fallback.len();
         src.extend(quote!(static YY_FALLBACK: [i32; #yy_fallback_len] = [ #(#yy_fallback),* ];));
 
@@ -2214,13 +2437,17 @@ impl Pomelo {
          ** Note: This code depends on the fact that rules are number
          ** sequentually beginning with 0.
          */
-        let yy_rule_info = self.rules.iter().map(|rp| {
-                self.the_symbols.get(self.the_rules.get(rp).lhs.0).index
-            }).map(Literal::usize_unsuffixed);
+        let yy_rule_info = self
+            .rules
+            .iter()
+            .map(|rp| self.the_symbols.get(self.the_rules.get(rp).lhs.0).index)
+            .map(Literal::usize_unsuffixed);
         let yy_rule_info_len = yy_rule_info.len();
-        src.extend(quote!(static YY_RULE_INFO: [#yycodetype; #yy_rule_info_len] = [ #(#yy_rule_info),* ];));
+        src.extend(
+            quote!(static YY_RULE_INFO: [#yycodetype; #yy_rule_info_len] = [ #(#yy_rule_info),* ];),
+        );
 
-        let unit_type : Type = parse_quote!(());
+        let unit_type: Type = parse_quote!(());
         let yyextratype = self.arg.as_ref().unwrap_or(&unit_type);
         let start = self.the_symbols.get(self.start.unwrap());
         let yyroottype = start.data_type.as_ref().unwrap_or(&unit_type);
@@ -2234,7 +2461,7 @@ impl Pomelo {
         });
         yyparser.fields = syn::Fields::Named(parser_fields);
 
-        src.extend(quote!{
+        src.extend(quote! {
             struct YYStackEntry #yy_generics_impl #yy_generics_where
             {
                 stateno: i32,   /* The state-number */
@@ -2268,7 +2495,7 @@ impl Pomelo {
         });
 
         let impl_parser = if *yyextratype == unit_type {
-            quote!{
+            quote! {
                 pub fn new() -> Self {
                     Self::new_priv(())
                 }
@@ -2277,7 +2504,7 @@ impl Pomelo {
                 }
             }
         } else {
-            quote!{
+            quote! {
                 pub fn new(extra: #yyextratype) -> Self {
                     Self::new_priv(extra)
                 }
@@ -2493,7 +2720,7 @@ impl Pomelo {
             }
         });
         let ty_span = yyparsefail.span();
-        src.extend(quote_spanned!{ty_span=>
+        src.extend(quote_spanned! {ty_span=>
             fn yy_parse_failed #yy_generics_impl(yy: &mut Parser #yy_generics) -> #yyerrtype
                 #yy_generics_where
             {
@@ -2522,7 +2749,6 @@ impl Pomelo {
             }
         });
 
-
         /* Generate code which execution during each REDUCE action */
         /* First output rules other than the default: rule */
         //TODO avoid dumping the same code twice
@@ -2550,12 +2776,10 @@ impl Pomelo {
                     }
                 )
             }
-            None => {
-                quote!(
-                    yy.yystatus = YYStatus::Accepted(());
-                    yy.yystack.clear();
-                )
-            }
+            None => quote!(
+                yy.yystatus = YYStatus::Accepted(());
+                yy.yystack.clear();
+            ),
         };
 
         let yyreduce_fn = quote!(
@@ -2602,7 +2826,10 @@ impl Pomelo {
             if let (Some(alias), MultiTerminal(ss)) = (alias, &r.typ) {
                 for or in &ss[1..] {
                     if r.dt_num != self.the_symbols.get(or).dt_num {
-                        return error_span(alias.span(), "Compound tokens with an alias must all have the same type"); //tested
+                        return error_span(
+                            alias.span(),
+                            "Compound tokens with an alias must all have the same type",
+                        ); //tested
                     }
                 }
             }
@@ -2610,15 +2837,19 @@ impl Pomelo {
 
         let mut yypattern = Vec::new();
         for SymbolAlias(r, _, alias) in &rp.rhs {
-            let yydt = Ident::new(&format!("YY{}", self.the_symbols.get(r).dt_num), Span::call_site());
+            let yydt = Ident::new(
+                &format!("YY{}", self.the_symbols.get(r).dt_num),
+                Span::call_site(),
+            );
             match alias {
                 Some(alias) => {
                     if Some(r) == self.wildcard.as_ref() {
-                        return error_span(alias.span(), "Wildcard token must not have an alias"); //tested
+                        return error_span(alias.span(), "Wildcard token must not have an alias");
+                        //tested
                     }
                     yypattern.push(quote!(YYMinorType::#yydt(#alias)))
                 }
-                None => yypattern.push(quote!(_))
+                None => yypattern.push(quote!(_)),
             }
         }
 

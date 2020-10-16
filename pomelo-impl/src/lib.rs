@@ -1,4 +1,4 @@
-#![recursion_limit="256"]
+#![recursion_limit = "256"]
 extern crate proc_macro;
 extern crate proc_macro2;
 #[macro_use]
@@ -11,9 +11,9 @@ mod parser;
 
 use decl::*;
 
-use syn::{Ident, LitInt, Type, token};
-use syn::parse::{Parse, Result, Error, ParseStream};
+use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::punctuated::Punctuated;
+use syn::{token, Ident, LitInt, Type};
 
 #[doc(hidden)]
 #[proc_macro]
@@ -29,7 +29,7 @@ fn pomelo_impl2(decls: Vec<Decl>) -> syn::Result<proc_macro::TokenStream> {
     let mut pomelo = parser::Pomelo::new_from_decls(decls)?;
     let expanded = pomelo.build()?;
     let name = pomelo.module_name();
-    let x = quote!{
+    let x = quote! {
         mod #name {
             #expanded
         }
@@ -244,7 +244,9 @@ impl Parse for Decl {
         } else {
             // rule: id ::= rhs1 rhs2 ... [[precedence]] [ { code } ] [;]
             // rhs:  id1|id2[?][(alias)]
-            let lhs = input.parse::<Ident>().map_err(|e| Error::new(e.span(), "% or identifier expected"))?;
+            let lhs = input
+                .parse::<Ident>()
+                .map_err(|e| Error::new(e.span(), "% or identifier expected"))?;
             input.parse::<Token![::]>()?;
             input.parse::<Token![=]>()?;
             let mut rhs = Vec::new();
