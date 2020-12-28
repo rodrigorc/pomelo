@@ -1,6 +1,10 @@
-extern crate pm_lexer as lexer;
+///! Example of how to use Logos with Pomelo.
+///! You can use separated enums for the output of Logos and the input of Pomelo
+///! and do a match, or with a bit of imagination you can use the same enum for both!
+
 use pomelo::pomelo;
 use std::collections::HashMap;
+use logos::Logos;
 
 #[derive(Debug, Clone)]
 pub enum JObject {
@@ -16,48 +20,12 @@ impl std::str::FromStr for JObject {
     type Err = String;
     fn from_str(input: &str) -> Result<JObject, String> {
         let mut p = json::Parser::new();
-        let tok_stream = input.parse().map_err(|_| "Lexer Error")?;
-        lexer::parse::<String, _>(tok_stream, |tk| {
-            use proc_macro2::TokenTree;
-            let tk = match tk {
-                TokenTree::Punct(p) => match p.as_char() {
-                    '{' => json::Token::LBrace,
-                    '}' => json::Token::RBrace,
-                    '[' => json::Token::LBracket,
-                    ']' => json::Token::RBracket,
-                    ',' => json::Token::Comma,
-                    ':' => json::Token::Colon,
-                    c => { return Err(format!("Invalid character '{}'", c)); }
-                }
-                TokenTree::Literal(l) => {
-                    let s = l.to_string();
-                    if s.starts_with('"') && s.ends_with('"') {
-                        let bs = s.into_bytes();
-                        let s = std::str::from_utf8(&bs[1..bs.len()-1]).unwrap().to_string();
-                        json::Token::JString(s)
-                    } else {
-                        let i = s.parse().map_err(|_| "Invalid integer value")?;
-                        json::Token::JNumber(i)
-                    }
-                }
-                TokenTree::Ident(i) => {
-                    let s = i.to_string();
-                    if s == "true" {
-                        json::Token::JBool(true)
-                    } else if s == "false" {
-                        json::Token::JBool(false)
-                    } else if s == "null" {
-                        json::Token::JNull
-                    } else {
-                        return Err(format!("Invalid token '{}'", s));
-                    }
-                }
-                _ => unimplemented!()
-            };
-            p.parse(tk).map_err(|_| "Parser error")?;
-            Ok(())
-        })?;
-        let j = p.end_of_input().map_err(|_| "Parser error")?;
+        let mut lex = json::Token::lexer(input);
+
+        while let Some(tk) = lex.next() {
+            p.parse(tk).map_err(|_| format!(r#"Parser error at: {:?} "{}""#, lex.span(), lex.slice()))?;
+        }
+        let j = p.end_of_input().map_err(|_| "Parser error: unexpected EOF")?;
         Ok(j)
     }
 }
@@ -67,15 +35,39 @@ pomelo! {
     %include {
         use super::JObject;
         use std::collections::HashMap;
+        use logos::{Logos, Lexer};
+
+        fn parse_number(lex: &Lexer<Token>) -> Result<i64, std::num::ParseIntError> {
+            let s = lex.slice();
+            s.parse()
+        }
+        fn parse_string(lex: &Lexer<Token>) -> String {
+            let s = lex.slice();
+            String::from(&s[1 .. s.len() - 1])
+        }
     }
-    %token #[derive(Debug)] pub enum Token {};
+    %token #[derive(Debug, Logos)] pub enum Token { };
+
+    %type 
+        #[error]
+        #[regex(r"[ \t\r\n\f]+", logos::skip)]
+        Error;
+    %type #[token("{")] LBrace;
+    %type #[token("}")] RBrace;
+    %type #[token("[")] LBracket;
+    %type #[token("]")] RBracket;
+    %type #[token(",")] Comma;
+    %type #[token(":")] Colon;
+    %type #[regex("[0-9]+", parse_number)] JNumber i64;
+    %type #[regex(r#""([^"]|\\")*""#, parse_string)] JString String;
+    %type #[token("null")] JNull;
+    %type #[token("true")] JTrue;
+    %type #[token("false")] JFalse;
+
     %type start JObject;
     %type jobject JObject;
     %type jdict JObject;
     %type jarray JObject;
-    %type JNumber i64;
-    %type JString String;
-    %type JBool bool;
     %type jobject_list Vec<JObject>;
     %type jitem_list HashMap<String, JObject>;
     %type jitem (String, JObject);
@@ -86,7 +78,8 @@ pomelo! {
     jobject ::= jarray(A) { A }
     jobject ::= JNumber(N) { JObject::JNumber(N) }
     jobject ::= JString(S) { JObject::JString(S) }
-    jobject ::= JBool(B) { JObject::JBool(B) }
+    jobject ::= JTrue { JObject::JBool(true) }
+    jobject ::= JFalse { JObject::JBool(false) }
     jobject ::= JNull { JObject::JNull }
 
     jdict ::= LBrace jitem_list?(D) RBrace { JObject::JDict(D.unwrap_or_else(HashMap::new)) }
@@ -108,7 +101,7 @@ fn main() {
         println!("arg: '{}'", arg);
         match arg.parse() {
             Ok::<JObject,_>(j) => println!("JSON: '{:#?}'", j),
-            Err(e) => println!("Err: '{:#?}'", e)
+            Err(e) => println!("Err: '{}'", e)
         }
     }
 }

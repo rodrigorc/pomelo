@@ -29,3 +29,4 @@ quote = "1.0"
 proc-macro2 = "1.0"
 compiletest_rs = { version = "0.4", features = ["stable"] }
 pm-lexer = { version = "=0.1.4", path="pm-lexer" }
+logos = "0.11.4"
