@@ -73,7 +73,7 @@ let mut parser = parser::Parser::new();
 Here, `parser` is the generated module. `Parser` is the struct that represents the parser and `new()` the function that creates and initializes a new parser.
 
 The `new()`function may have an argument, depending on the grammar. If the grammar specification
-file request it (see `%extra_argument`), the `new()` function will have a parameter
+file requests it (see `%extra_argument`), the `new()` function will have a parameter
 that can be of any type chosen by the programmer. The parser doesn't do anything with this argument
 except to pass a mutable reference to it to action routines. This is a convenient mechanism for
 passing state information down to the action routines without having to use global variables.
@@ -95,7 +95,7 @@ When all the input has been consumed, the following function may be used to indi
 parser.end_of_input()?;
 ```
 
-This function actually consumes the parser and returns a value of type `Result<Output, Error>`. If there is no extra type defined, then `Output` the type of the start symbol of the grammar, or `()` if it has no type. If there is an extra type, then `Output` is a tuple `(ExtraType, TypeOfStartSymbol)`.
+This function actually consumes the parser and returns a value of type `Result<Output, Error>`. If there is no extra type defined, then `Output` is the type of the start symbol of the grammar, or `()` if it has no type. If there is an extra type, then `Output` is a tuple `(ExtraType, TypeOfStartSymbol)`.
 
 A typical use of a *pomelo* parser might look something like the following:
 
@@ -136,7 +136,7 @@ We assume the existence of some kind of tokenizer which is created using `Tokeni
 `Option<parser::Token>`. The enum data is assumed to be some type that contains details about each
 token, such as its complete text, what line it occurs on, etc.
 
-This example also assumes the existence of structure of type `parser::State` that holds state
+This example also assumes the existence of a type `parser::State` that holds state
 information about a particular parse. An instance of such a type is created with a call to
 `parser::State::new()` and then passed into the parser upon initialization, as the optional argument.
 The action routine specified by the grammar for the parser can use the this value to hold whatever
@@ -158,7 +158,7 @@ The most obvious difference here is that *lemon* is written in C and generates C
 *pomelo* is written in Rust and produces Rust code. Many other differences arise from this fact:
 
  * Since there is no command to call, there are no command line switches.
- * No `%destructor` or `%default_desctructor` or `%token_desctructor` directives. Rust `drop` semantics should take care or everything.
+ * No `%destructor` or `%default_destructor` or `%token_destructor` directives. Rust `drop` semantics should take care or everything.
  * No `%parse_accept` directive. If you want to run code after the end-of-input, just do it after calling Parser::end_of_input().
  * No `%token_type` directive. See below for details.
  * New `%extra_token` directive.
@@ -175,7 +175,7 @@ necessary because the `Parse()` function must be declared with a type able to ac
 non-terminals can be equally defined just with `%type`. If you want to add location information to
 all terminal symbols you can use the `%extra_token` directive.
 
-If left-hand side of a grammar rule has user defined type, then it must have a code block to produce its value. You can omit the code block if the rule has the following properties:
+If the left-hand side of a grammar rule has an user defined type, then it must have a code block to produce its value. You can omit the code block if the rule has the following properties:
 
  * There is exactly one symbol on the right-hand side with type.
  * The type of that symbol is identical to the type of the left-hand side symbol's.
@@ -236,17 +236,17 @@ The main purpose of the `pomelo!` macro is to define the grammar for the parser.
 specifies additional information *pomelo* requires to do its job.
 
 The grammar for *pomelo* is, for the most part, free format. It does not have sections or
-divisions like *yacc* or *bison*. Any declaration can occur at any point in the macro. *pomelo*
+divisions like *yacc* or *bison*. Any declaration can occur at any point in the macro. *Pomelo*
 ignores whitespace (except where it is needed to separate tokens) and it honors the same commenting
 conventions as Rust.
 
 ### Terminals and Nonterminals
 
-A terminal symbol (token) is any string of alphanumeric and underscore characters that begins with an upper case letter. A terminal can contain lowercase letters after the first character. A nonterminal, on the other hand, is any string of alphanumeric and underscore characters than begins with a lower case letter.
+A terminal symbol (token) is any string of alphanumeric and underscore characters that begins with an upper case letter. A terminal can contain lowercase letters after the first character. A nonterminal, on the other hand, is any string of alphanumeric and underscore characters that begins with a lower case letter.
 
-In *pomelo*, terminal and nonterminal symbols do not need to be declared or identified in a separate section of the grammar. *pomelo* is able to generate a list of all terminals and nonterminals by examining the grammar rules, and it can always distinguish a terminal from a nonterminal by checking the case of the first character of the name.
+In *pomelo*, terminal and nonterminal symbols do not need to be declared or identified in a separate section of the grammar. *Pomelo* is able to generate a list of all terminals and nonterminals by examining the grammar rules, and it can always distinguish a terminal from a nonterminal by checking the case of the first character of the name.
 
-*Yacc* and *bison* allow terminal symbols to have either alphanumeric names or to be individual characters included in single quotes, like this: `)` or `$`. *pomelo* does not allow this alternative form for terminal symbols. With *pomelo*, all symbols, terminals and nonterminals, must have alphanumeric names.
+*Yacc* and *bison* allow terminal symbols to have either alphanumeric names or to be individual characters included in single quotes, like this: `)` or `$`. *Pomelo* does not allow this alternative form for terminal symbols. With *pomelo*, all symbols, terminals and nonterminals, must have alphanumeric names.
 
 ### Grammar Rules
 
@@ -276,7 +276,7 @@ There is one non-terminal in this example, `expr`, and five terminal symbols or 
 
 Like *yacc* and *bison*, *pomelo* allows the grammar to specify a block of code that will be
 executed whenever a grammar rule is reduced by the parser. In *pomelo*, this action is specified by
-putting the code (contained within curly braces {...}) in place fo the semi-colon that closes the
+putting the code (contained within curly braces {...}) in place of the semi-colon that closes the
 rule. For example:
 
 ```text
@@ -312,7 +312,7 @@ pattern to match the corresponding value of that symbol.
 The *pomelo* notation for linking a grammar rule with its reduce action is superior to *yacc* or
 *bison* on several counts. First, as mentioned above, the *pomelo* method avoids the need to count
 grammar symbols. Secondly, you cannot forget to assign to the left-hand side symbol: if the code block
-does not have the same type as the left-hand side symbol, a compiler error will raise.
+does not have the same type as the left-hand side symbol, a compiler error will be raised.
 
 If you have several terminal tokens that can be used in the same place you can put them all in the
 same rule, separated with `|`.
@@ -433,7 +433,7 @@ The input grammar to *pomelo* consists of grammar rules and special directives. 
 the grammar rules, so now we'll talk about the special directives.
 
 Directives in *pomelo* can occur in any order. You can put them before the grammar rules, or after
-the grammar rules, or in the mist of the grammar rules. It doesn't matter. The relative order of
+the grammar rules, or in the midst of the grammar rules. It doesn't matter. The relative order of
 directives used to assign precedence to terminals is important, but other than that, the order of
 directives is arbitrary.
 
@@ -474,8 +474,7 @@ will create a module named `ident` instead of the default `parser`. This is spec
 #### The `%type` directive
 
 This directive is used to specify the data types for values on the parser's stack associated with
-terminal and non-terminal symbols. Usually, you will make the type of the terminal symbols to some
-kind of token struct. The type associated to a non-terminal will be the type of the data associated
+terminal and non-terminal symbols. The type of the terminal symbol is the value associated to the input token. The type associated to a non-terminal will be the type of the data associated
 to the corresponding variant of the `Token` enumeration. For example:
 
 ```text
@@ -491,7 +490,7 @@ pub Token {
 }
 ```
 
-Typically the data type of a non-terminal is a parse-tree structure that contains all information about that non-terminal For example:
+Typically the data type of a non-terminal is a parse-tree structure that contains all information about that non-terminal. For example:
 
 ```text
 %type expr ExprType;
@@ -509,7 +508,7 @@ are willing and able to pay that price, fine. You just need to know.
 The `%include` directive specifies Rust code that is included into the generated module. You can
 include any Rust items you want. You can have multiple `%include` directives in your grammar.
 
-The `%include` directive is very handy using symbols declared elsewhere. For example:
+The `%include` directive is very handy for using symbols declared elsewhere. For example:
 
 ```text
 %include { use super::*; }
@@ -524,7 +523,7 @@ In this code you have available `extra` as a mutable reference to the current `e
 By default it evaluates to `Err(Default::default())` so:
 
  * if `Error` implements `Default` it will fail with the default error.
- * if `Error` does not implement `Default` it will fail to compile and you *must* use this directive to create a meaningful one or to return Ok(()) and ignore the error.
+ * if `Error` does not implement `Default` it will fail to compile and you *must* use this directive to create a meaningful one or to return `Ok(())` and ignore the error.
 
 #### The `%parse_fail` directive
 
@@ -540,7 +539,7 @@ unable to continue. It must evaluate to the defined `Error` type.
 }
 ```
 
-By default it will  return `Default::default()`. If your `Error` type does not implement default()
+By default it will  return `Default::default()`. If your `Error` type does not implement `default()`
 it will be a compiler error, so in this case you must use this directive.
 
 After a parse failure this parser object must not be used again.
@@ -550,10 +549,10 @@ After a parse failure this parser object must not be used again.
 The `%stack_overflow` directive specifies a block of Rust code that is executed whenever the
 internal stack overflows. Beware of righ recursivity rules and right associativity! It must be evaluated to the defined `Error` type.
 
-By default it will  return `Default::default()`. If your `Error` type does not implement default()
+By default it will  return `Default::default()`. If your `Error` type does not implement `default()`
 it will be a compiler error, so in this case you must use this directive.
 
-However, if you set your `%stack_size` to `0` (unlimited), then the stack will never overflow, so
+However, if you set your `%stack_size` to `0` (unlimited), then the stack will never overflow, and
 this directive is defaulted to `unreachable!()`.
 
 ```text
@@ -600,7 +599,7 @@ You can use alternative types for the stack to make your parser `no-std` complia
 ```text
 %include {
     use arrayvec::ArrayVec;
-    type Stackc<T> = ArrayVec<[T; 32]>;
+    type Stack<T> = ArrayVec<[T; 32]>;
 }
 %stack_size 32 Stack;
 ```
@@ -635,7 +634,7 @@ This directive specifies a default type for all the symbols that do not specify 
 The `%extra_argument` directive instructs *pomelo* to add a parameter to the `Parser::new()` function it generates. *Pomelo* doesn't do anything itself with this extra argument, but it does make the argument available to Rust-code action routines, and so forth, as a mutable refernce named `extra`. For example, if the grammar file contains:
 
 ```text
-%extra_argument { MyStruct }
+%extra_argument MyStruct;
 ```
 
 Then the function generated will be of the form `Parser::new(extra: MyStruct)` and all action routines will have access to a variable as `extra: &mut MyStruct` that is the value of the stored argument.
@@ -745,13 +744,13 @@ This directive is used to customize the `Parser` struct generated by *pomelo*. I
 %parser pub struct Parser<'a> {};
 ```
 
-The default if it is this directive is not used is `pub struct Parser {}`, but with the added generic arguments from `%parser` if any.
+The default if it is this directive is not used is `pub struct Parser {}`, but with the added generic arguments from `%token` if any.
 
 For more about generic arguments see the [Generic Parsers](#generic-parsers) section.
 
 #### The `%extra_token` directive
 
-Sometimes, all tokens share a common piece of data. This is usually some kind of location (line/column information). In those cases, instead of adding it to the type all all terminal tokens, you can use this directive that takes a single type as argument. For example:
+Sometimes, all tokens share a common piece of data. This is usually some kind of location (line/column information). In those cases, instead of adding it to the type of all terminal tokens, you can use this directive that takes a single type as argument. For example:
 
 ```text
 %extra_token Loc;
@@ -795,7 +794,7 @@ your grammar.
 You can use generic arguments either in the `Token` enum, the `Parser` struct, or both. For that,
 the directives `%token` and `%parser` are used. Note that, since the `Parser` contains partially
 parsed tokens, every generic argument used in `Token` must also be specified in `Parser`. This is
-the default, if `%parser` is not used but must be taken into account if you use both directives.
+the default if `%parser` is not used but must be taken into account if you use both directives.
 
 Generic arguments in `Parser` can be used anywhere except terminal symbol types. That includes
 non-terminal types, the `%extra_argument` type and the `%error` type.
