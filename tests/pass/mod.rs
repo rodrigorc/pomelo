@@ -1,3 +1,4 @@
+mod pm_lexer;
 mod toy_lexer;
 mod tree;
 mod start_symbol;

@@ -1,4 +1,4 @@
-extern crate pm_lexer as lexer;
+use super::pm_lexer;
 use pomelo::*;
 use super::toy_lexer;
 
@@ -9,7 +9,7 @@ pomelo! {
     }
     %include {
         use super::toy_lexer::{self, TestTree, TestToken};
-        use super::lexer;
+        use super::pm_lexer;
 
         fn char_to_token(c: char) -> Result<Token, String> {
             let tk = match c {
@@ -41,7 +41,7 @@ pomelo! {
             let tokstream = input.parse().map_err(|e: proc_macro2::LexError| "lexer error")?;
             let mut p = Parser::new();
 
-            lexer::parse(tokstream, |tk| {
+            pm_lexer::parse(tokstream, |tk| {
                 let tk = match tk {
                     proc_macro2::TokenTree::Punct(p) => char_to_token(p.as_char())?,
                     proc_macro2::TokenTree::Literal(l) => Token::Integer(l.to_string().parse().unwrap()),
