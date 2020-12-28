@@ -13,7 +13,7 @@ use decl::*;
 
 use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::punctuated::Punctuated;
-use syn::{token, Ident, LitInt, Type};
+use syn::{token, Ident, LitInt, Type, Attribute};
 
 #[doc(hidden)]
 #[proc_macro]
@@ -80,10 +80,16 @@ impl Parse for Decl {
             if lookahead.peek(Token![type]) {
                 // %type ident type;
                 input.parse::<Token![type]>()?;
+                let attrs = input.call(Attribute::parse_outer)?;
                 let ident = input.parse::<Ident>()?;
-                let typ = input.parse::<Type>()?;
+                let lookahead = input.lookahead1();
+                let typ = if lookahead.peek(Token![;]) {
+                    None
+                } else {
+                    Some(input.parse::<Type>()?)
+                };
                 input.parse::<Token![;]>()?;
-                Ok(Decl::Type(ident, typ))
+                Ok(Decl::Type(attrs, ident, typ))
             } else if lookahead.peek(kw::module) {
                 input.parse::<kw::module>()?;
                 // %module ident;

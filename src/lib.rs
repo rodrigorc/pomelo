@@ -496,6 +496,22 @@ Typically the data type of a non-terminal is a parse-tree structure that contain
 %type expr ExprType;
 ```
 
+Some Rust crates use derive macros in enums and require attributes in the Token enum variants. You can add them here, only for terminal tokens.
+For example:
+```text
+%type #[serde(rename = "Amount")] Quantity i32;
+```
+will create a variant:
+```text
+pub Token {
+    ...
+    #[serde(rename = "Amount")] Quantity(i32);
+}
+```
+
+The type of the symbol is optional: if you do not specify the variant will have no type. This is usually not needed because *pomelo* will
+create typeless terminals automatically if they appear in the grammar rules, but it can be needed to specify the attributes.
+
 Each entry on the parser's stack is actually an enum containing variants of all data types for
 every symbol. *Pomelo* will automatically use the correct element of this enum depending on what
 the corresponding symbol is. But the grammar designer should keep in mind that the size of the enum

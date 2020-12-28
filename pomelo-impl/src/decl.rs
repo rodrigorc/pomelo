@@ -1,4 +1,4 @@
-use syn::{Block, Ident, Item, ItemEnum, ItemStruct, Pat, Type};
+use syn::{Block, Ident, Item, ItemEnum, ItemStruct, Pat, Type, Attribute};
 
 #[derive(Debug, Copy, Clone)]
 pub enum Associativity {
@@ -14,7 +14,7 @@ pub enum Decl {
     SyntaxError(Block),
     ParseFail(Block),
     StackOverflow(Block),
-    Type(Ident, Type),
+    Type(Vec<Attribute>, Ident, Option<Type>),
     Assoc(Associativity, Vec<Ident>),
     DefaultType(Type),
     ExtraArgument(Type),

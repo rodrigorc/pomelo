@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 use crate::decl::*;
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::ToTokens;
-use syn::{spanned::Spanned, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type, Variant};
+use syn::{spanned::Spanned, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type, Variant, Attribute};
 
 mod vecref;
 use vecref::*;
@@ -85,6 +85,7 @@ struct Symbol {
     use_cnt: i32,                   //Number of times used
     data_type: Option<Type>,        //Data type held by this object
     dt_num: usize, //The data type number (0 is always ()). The YY{} element of stack is the correct data type for this object
+    attributes: Vec<Attribute>,
 }
 
 impl Symbol {
@@ -1661,6 +1662,7 @@ impl Pomelo {
             use_cnt: 1,
             data_type: None,
             dt_num: 0,
+            attributes: Vec::new(),
         };
 
         let id = self.the_symbols.push(symbol);
@@ -1716,10 +1718,16 @@ impl Pomelo {
                 }
                 self.stack_overflow = Some(code);
             }
-            Decl::Type(id, ty) => {
+            Decl::Type(attrs, id, ty) => {
                 let nst = if is_terminal_ident(&id) {
                     NewSymbolType::Terminal
                 } else if is_nonterminal_ident(&id) {
+                    if !attrs.is_empty() {
+                        return error_span(
+                            attrs[0].span(),
+                            "Non terminal symbol cannot have attributes",
+                        );
+                    }
                     NewSymbolType::NonTerminal
                 } else {
                     return error_span(
@@ -1733,7 +1741,8 @@ impl Pomelo {
                     return error_span(id.span(), "Symbol type already defined");
                     //tested
                 }
-                sp.data_type = Some(ty);
+                sp.data_type = ty;
+                sp.attributes = attrs;
             }
             Decl::Assoc(a, ids) => {
                 pdt.precedence += 1;
@@ -2270,7 +2279,7 @@ impl Pomelo {
                 }
             };
             yytoken.variants.push(Variant {
-                attrs: vec![],
+                attrs: s.attributes.clone(),
                 ident: Ident::new(&s.name, yytoken_span),
                 fields: dt,
                 discriminant: None,
