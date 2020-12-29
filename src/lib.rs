@@ -27,7 +27,7 @@ pomelo! {
 }
 fn main() -> Result<(), ()> {
     use parser::{Parser, Token};
-    //Real world code would use a tokenizer
+    // Real-world code would use a tokenizer.
     let tokens = vec![
         Token::Number(1),
         Token::Comma,
@@ -818,26 +818,141 @@ non-terminal types, the `%extra_argument` type and the `%error` type.
 In addition to those, generic arguments in `Token` can also be used in terminal symbol types and the
 `%extra_token` directive.
 
-You may think that generic parsers are a bizarre idea, but remember that in Rust *lifetimes* are also
-generic arguments. You will need that if you want, for example, `%extra_argument` to be a reference:
+Generic parsers can be very handy, as illustrated by the following two examples.
+
+#### Generic lifetimes
+
+Generic lifetime parameters allow the optional extra argument `%extra_argument` to reference shared data.
+Additionally, tokens may refer to data slices within the input of the parser.
 
 ```
 # #[macro_use] extern crate pomelo;
+# use std::collections::HashMap;
 pomelo! {
-    %parser pub struct Parser<'e> {};
-    %extra_argument &'e mut Vec<String>;
+    %include { use std::collections::HashMap; }
+    %parser pub struct Parser<'e>{};
+    %token pub enum Token<'e>{};
+    %extra_argument &'e HashMap<&'e[u8], i32>;
 
-    input ::= ;
+    %type input i32;
+    %type numbers i32;
+    %type number i32;
+    %type Number i32;
+    %type Var &'e[u8];
+    input ::= numbers?(A) { A.unwrap_or(0) };
+    number ::= Number(N) { N }
+    number ::= Var(X) { match extra.get(X) { Some(v) => *v, _ => return Err(())} }
+    numbers ::= number(N) { N }
+    numbers ::= numbers(V) Comma number(N) { V + N }
 }
-fn main() {
-    use parser::Parser;
-    let mut ctx = Vec::new();
-    loop {
-        //use short-lived parsers reusing the same context
-        let p = Parser::new(&mut ctx);
-        //...
-# break
+
+fn main() -> Result<(), ()> {
+    use parser::{Parser, Token};
+    let input = b"1,x,2";
+    // Real-world code would use a tokenizer.
+    let x = &input[2..3];
+    let tokens = vec![
+        Token::Number(1),
+        Token::Comma,
+        Token::Var(x),
+        Token::Comma,
+        Token::Number(2),
+    ];
+
+    let mut values = HashMap::new();
+    values.insert(x, 4);
+
+    let mut p = Parser::new(&values);
+    for tok in tokens.into_iter() {
+        p.parse(tok)?;
     }
+    let (value, _) = p.end_of_input()?;
+    assert_eq!(value, 7);
+    Ok(())
+}
+```
+
+#### Generic production rules
+
+Using a generic extra argument constrained by a trait makes it possible to change output types
+and add side effects to production rules while re-using the same parser module.
+
+```
+# #[macro_use] extern crate pomelo;
+pub trait Adder {
+    type Value;
+    fn from_int(&mut self, value: i32) -> Self::Value;
+    fn add(&mut self, v1: Self::Value, v2: Self::Value) -> Self::Value;
+}
+
+pomelo! {
+    %parser pub struct Parser<T: super::Adder> {};
+    %extra_argument T;
+    %token #[derive(Clone)] pub enum Token{};
+
+    %type input T::Value;
+    %type numbers T::Value;
+    %type Number i32;
+    input ::= numbers?(A) { A.unwrap_or_else(|| extra.from_int(0)) };
+    numbers ::= Number(N) { extra.from_int(N) }
+    numbers ::= numbers(V) Comma Number(N) { let w = extra.from_int(N); extra.add(V, w) }
+}
+
+struct OpsCounter(usize);
+
+impl Adder for OpsCounter {
+    type Value = i32;
+
+    fn from_int(&mut self, value: i32) -> Self::Value {
+        value
+    }
+
+    fn add(&mut self, v1: Self::Value, v2: Self::Value) -> Self::Value {
+        self.0 += 1;
+        v1 + v2
+    }
+}
+
+struct LazyAdder;
+
+impl Adder for LazyAdder {
+    type Value = Vec<i32>;
+
+    fn from_int(&mut self, value: i32) -> Self::Value {
+        vec![value]
+    }
+
+    fn add(&mut self, mut v1: Self::Value, v2: Self::Value) -> Self::Value {
+        v1.extend_from_slice(&v2);
+        v1
+    }
+}
+
+fn main() -> Result<(), ()> {
+    use parser::{Parser, Token};
+    // Real-world code would use a tokenizer.
+    let tokens = vec![
+        Token::Number(1),
+        Token::Comma,
+        Token::Number(2),
+        Token::Comma,
+        Token::Number(3),
+    ];
+    let mut p = Parser::new(OpsCounter(0));
+    for tok in tokens.iter() {
+        p.parse(tok.clone())?;
+    }
+    let (value, counter) = p.end_of_input()?;
+    assert_eq!(value, 6);
+    assert_eq!(counter.0, 2);
+
+    let mut p = Parser::new(LazyAdder);
+    for tok in tokens.into_iter() {
+        p.parse(tok)?;
+    }
+    let (numbers, _) = p.end_of_input()?;
+    assert_eq!(numbers, vec![1,2,3]);
+    Ok(())
 }
 ```
 
