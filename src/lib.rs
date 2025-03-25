@@ -550,7 +550,7 @@ unable to continue. It must evaluate to the defined `Error` type.
 
 ```text
 %error String;
-%parse_failure {
+%parse_fail {
     "Giving up.  Parser is hopelessly lost...".to_string()
 }
 ```
