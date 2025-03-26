@@ -273,7 +273,7 @@ impl Parse for Decl {
                 let alias = if input.peek(token::Paren) {
                     let sub;
                     parenthesized!(sub in input);
-                    Some(sub.parse()?)
+                    Some(syn::Pat::parse_multi(&sub)?)
                 } else {
                     None
                 };

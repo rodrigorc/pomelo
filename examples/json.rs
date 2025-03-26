@@ -23,6 +23,7 @@ impl std::str::FromStr for JObject {
         let mut lex = json::Token::lexer(input);
 
         while let Some(tk) = lex.next() {
+            let tk = tk.map_err(|_| "lexer error")?;
             p.parse(tk).map_err(|_| format!(r#"Parser error at: {:?} "{}""#, lex.span(), lex.slice()))?;
         }
         let j = p.end_of_input().map_err(|_| "Parser error: unexpected EOF")?;
@@ -37,21 +38,20 @@ pomelo! {
         use std::collections::HashMap;
         use logos::{Logos, Lexer};
 
-        fn parse_number(lex: &Lexer<Token>) -> Result<i64, std::num::ParseIntError> {
+        fn parse_number(lex: &Lexer<Token>) -> Option<i64> {
             let s = lex.slice();
-            s.parse()
+            s.parse().ok()
         }
         fn parse_string(lex: &Lexer<Token>) -> String {
             let s = lex.slice();
             String::from(&s[1 .. s.len() - 1])
         }
     }
-    %token #[derive(Debug, Logos)] pub enum Token { };
+    %token
+        #[derive(Debug, Logos)]
+        #[logos(skip r"[ \t\n\f]+")]
+        pub enum Token { };
 
-    %type 
-        #[error]
-        #[regex(r"[ \t\r\n\f]+", logos::skip)]
-        Error;
     %type #[token("{")] LBrace;
     %type #[token("}")] RBrace;
     %type #[token("[")] LBracket;

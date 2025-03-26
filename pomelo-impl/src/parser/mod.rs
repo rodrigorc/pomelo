@@ -2280,7 +2280,7 @@ impl Pomelo {
             };
             yytoken.variants.push(Variant {
                 attrs: s.attributes.clone(),
-                ident: Ident::new(&s.name, yytoken_span),
+                ident: Ident::new(&s.name, yytoken_span.open()),
                 fields: dt,
                 discriminant: None,
             });
