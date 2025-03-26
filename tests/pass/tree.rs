@@ -43,10 +43,8 @@ pomelo! {
 
             pm_lexer::parse(tokstream, |tk| {
                 let tk = match tk {
-                    proc_macro2::TokenTree::Punct(p) => char_to_token(p.as_char())?,
-                    proc_macro2::TokenTree::Literal(l) => Token::Integer(l.to_string().parse().unwrap()),
-                    proc_macro2::TokenTree::Ident(i) => panic!(),
-                    proc_macro2::TokenTree::Group(g) => panic!(),
+                    pm_lexer::PmToken::Char(c) => char_to_token(c)?,
+                    pm_lexer::PmToken::Literal(s) => Token::Integer(s.parse().unwrap()),
                 };
                 p.parse(tk)?;
                 Ok::<(), String>(())
