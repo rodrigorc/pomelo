@@ -13,7 +13,7 @@ use decl::*;
 
 use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::punctuated::Punctuated;
-use syn::{token, Ident, LitInt, Type, Attribute};
+use syn::{token, Attribute, Ident, LitInt, Type};
 
 #[doc(hidden)]
 #[proc_macro]

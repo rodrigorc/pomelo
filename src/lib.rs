@@ -534,7 +534,11 @@ The `%include` directive is very handy for using symbols declared elsewhere. For
 
 The `%syntax_error` directive specify code that will be called when a syntax error occurs. This code must evaluate to a value of type `Result<(), Error>`, and it is run in an function that returns the same type so you can also use the `?` operator. If it evaluates to `Ok(())`, the parser will try to recover and continue. If it evaluates to `Err(_)` or a `?` fails, the parser will fail with that error value. See the section [Error Processing](#error-processing) for more details.
 
-In this code you have available `extra` as a mutable reference to the current `extra_argument`, and `token` as a type of value `Option<Token>` with the token that triggered the error. If the error is caused by the end-of-input, then `token` will be `None`.
+In this code you have available `extra` as a mutable reference to the current `extra_argument`, `token` 
+as a type of value `Option<Token>` with the token that triggered the error (or none if the error is caused by the end-of-input), 
+and `expected`. `expected` is a list of `ExpectedToken`, where `ExpectedToken` has the fields `name: &'static str`,
+`yy_major: i32` (the integer corresponding to a token variant; potentially useful for debugging), and `token: Option<Token>`,
+which contains a value if the token variant can be constructed without any data (i.e. is a unit variant).
 
 By default it evaluates to `Err(Default::default())` so:
 
@@ -793,9 +797,9 @@ This directive makes *pomelo* to dump the built states of the grammar to the con
 After extensive experimentation over several years, it has been discovered that the error recovery
 strategy used by *yacc* is about as good as it gets. And so that is what *pomelo* uses.
 
-When a *pomelo*-generated parser encounters a syntax error, it first invokes the code specified by
-the `%syntax_error` directive, if any. It then enters its error recovery strategy. The error
-recovery strategy is to begin popping the parsers stack until it enters a state where it is
+When a *pomelo*-generated parser encounters a syntax error, it first collects a list of expected tokens
+and then invokes the code specified by the `%syntax_error` directive, if any. It then enters its error recovery strategy. 
+The error recovery strategy is to begin popping the parsers stack until it enters a state where it is
 permitted to shift a special non-terminal symbol named `error`. It then shifts this non-terminal
 and continues parsing. But the `%syntax_error` routine will not be called again until at least
 three new tokens have been successfully shifted.

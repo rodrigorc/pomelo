@@ -8,7 +8,10 @@ use std::hash::{Hash, Hasher};
 use crate::decl::*;
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::ToTokens;
-use syn::{spanned::Spanned, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type, Variant, Attribute};
+use syn::{
+    spanned::Spanned, Attribute, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type,
+    Variant,
+};
 
 mod vecref;
 use vecref::*;
@@ -2253,10 +2256,12 @@ impl Pomelo {
         let mut token_matches = Vec::new();
         let mut token_builds = Vec::new();
         let mut token_extra = Vec::new();
+        let mut token_names = vec!["(eoi)".to_string()];
         for i in 1..self.num_terminals {
             let s = self.the_symbols.get(self.symbols[i]);
             let i = i as i32;
             let name = Ident::new(&s.name, Span::call_site());
+            token_names.push(s.name.clone());
             let yydt = Ident::new(&format!("YY{}", s.dt_num), Span::call_site());
             let dt = match &s.data_type {
                 Some(dt) => {
@@ -2330,6 +2335,12 @@ impl Pomelo {
                 }
             ));
         }
+
+        let token_names_len = token_names.len();
+        src.extend(
+            quote!(static YY_TOKEN_NAMES: [&str; #token_names_len] = [ #(#token_names),* ];),
+        );
+
         let yy_action = acttab
             .a_action
             .iter()
@@ -2560,6 +2571,39 @@ impl Pomelo {
             }
         });
 
+        src.extend(quote! {
+            #[derive(Clone)]
+            struct ExpectedTokens #yy_generics_impl #yy_generics_where {
+                stateno: i32,
+                yy_major: i32,
+                _phantom: ::std::marker::PhantomData<Parser #yy_generics>,
+            }
+
+            struct ExpectedToken #yy_generics_impl_token #yy_generics_where_token {
+                name: &'static str,
+                yy_major: i32,
+                token: Option<Token #yy_generics_token>,
+            }
+
+            impl #yy_generics_impl Iterator for ExpectedTokens #yy_generics #yy_generics_where {
+                type Item = ExpectedToken #yy_generics_token;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    use std::convert::TryFrom;
+                    loop {
+                        let yy_major = self.yy_major;
+                        let name = *YY_TOKEN_NAMES.get(usize::try_from(yy_major).unwrap())?;
+                        self.yy_major += 1;
+                        if yy_find_shift_action_2(self.stateno, yy_major) < YYNSTATE + YYNRULE {
+                            let yy0: YYMinorType #yy_generics = YYMinorType::YY0(());
+                            let token = token_build(yy_major, yy0);
+                            return Some(ExpectedToken { name, yy_major, token })
+                        }
+                    }
+                }
+            }
+        });
+
         src.extend(quote!{
             fn yy_parse_token #yy_generics_impl(yy: &mut Parser #yy_generics,
                                                         yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<(), #yyerrtype>
@@ -2594,6 +2638,17 @@ impl Pomelo {
                          ** grammar defines an error token "ERROR".
                          */
                         assert!(yyact == YYNSTATE+YYNRULE);
+
+                        /* Generate a list of tokens that would have been acceptable at this point.
+                         ** This will be fed to %syntax_error to allow producing more human-readable
+                         ** errors.
+                         */
+                        let expected = ExpectedTokens { 
+                            stateno: yy.yystack.last().unwrap().stateno,
+                            yy_major: 1,
+                            _phantom: ::std::marker::PhantomData,
+                        };
+
                         if YYERRORSYMBOL != 0 {
                             /* This is what we do if the grammar does define ERROR:
                              **
@@ -2614,7 +2669,7 @@ impl Pomelo {
 
                                 let yyact = yy_find_reduce_action(yy, YYERRORSYMBOL);
                                 if yyact < YYNSTATE {
-                                    let e = yy_syntax_error(yy, yymajor, yyminor)?;
+                                    let e = yy_syntax_error(yy, yymajor, yyminor, expected)?;
                                     yy_shift(yy, yyact, YYERRORSYMBOL, e)?;
                                     break;
                                 }
@@ -2639,7 +2694,7 @@ impl Pomelo {
                                 return Err(yy_parse_failed(yy));
                             }
                             if yy.error_count == 0 {
-                                yy_syntax_error(yy, yymajor, yyminor)?;
+                                yy_syntax_error(yy, yymajor, yyminor, expected)?;
                             }
                             yy.error_count = 3;
                             break;
@@ -2655,8 +2710,11 @@ impl Pomelo {
              */
             fn yy_find_shift_action #yy_generics_impl(yy: &mut Parser #yy_generics, look_ahead: i32) -> i32 #yy_generics_where
             {
-                let stateno = yy.yystack.last().unwrap().stateno;
+                yy_find_shift_action_2(yy.yystack.last().unwrap().stateno, look_ahead)
+            }
 
+            fn yy_find_shift_action_2(stateno: i32, look_ahead: i32) -> i32
+            {
                 if stateno > YY_SHIFT_COUNT {
                     return YY_DEFAULT[stateno as usize] as i32;
                 }
@@ -2672,7 +2730,7 @@ impl Pomelo {
                         if (look_ahead as usize) < YY_FALLBACK.len() {
                             let fallback = YY_FALLBACK[look_ahead as usize];
                             if fallback != 0 {
-                                return yy_find_shift_action(yy, fallback);
+                                return yy_find_shift_action_2(stateno, fallback);
                             }
                         }
                         if YYWILDCARD > 0 {
@@ -2743,17 +2801,17 @@ impl Pomelo {
         let error_yydt = Ident::new(&format!("YY{}", error_symbol.dt_num), Span::call_site());
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
-            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<#error_ty, #yyerrtype>
+            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics, mut expected: ExpectedTokens #yy_generics) -> ::core::result::Result<#error_ty, #yyerrtype>
                 #yy_generics_where
             {
                 let token = token_build(yymajor, yyminor);
                 let extra = &mut yy.extra;
                 #yysyntaxerror
             }
-            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics) -> ::core::result::Result<YYMinorType #yy_generics, #yyerrtype>
+            fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics, expected: ExpectedTokens #yy_generics) -> ::core::result::Result<YYMinorType #yy_generics, #yyerrtype>
                 #yy_generics_where
             {
-                let e = yy_syntax_error_2(yy, yymajor, yyminor)?;
+                let e = yy_syntax_error_2(yy, yymajor, yyminor, expected)?;
                 Ok(YYMinorType::#error_yydt(e))
             }
         });
