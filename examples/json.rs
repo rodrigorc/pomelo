@@ -1,7 +1,8 @@
-///! Example of how to use Logos with Pomelo.
-///! You can use separated enums for the output of Logos and the input of Pomelo
-///! and do a match, or with a bit of imagination you can use the same enum for both!
+//! Example of how to use Logos with Pomelo.
+//! You can use separated enums for the output of Logos and the input of Pomelo
+//! and do a match, or with a bit of imagination you can use the same enum for both!
 
+use logos::Logos;
 use pomelo::pomelo;
 use std::collections::HashMap;
 use logos::Logos;

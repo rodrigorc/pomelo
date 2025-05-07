@@ -3,9 +3,11 @@ use std::path::PathBuf;
 #[test]
 #[ignore]
 fn compile_test() {
-    let mut config = compiletest_rs::Config::default();
-    config.mode = compiletest_rs::common::CompileFail;
-    config.src_base = PathBuf::from("tests/compile-fail");
+    let mut config = compiletest_rs::Config {
+        mode: compiletest_rs::common::CompileFail,
+        src_base: PathBuf::from("tests/compile-fail"),
+        ..Default::default()
+    };
     config.link_deps();
     //config.clean_rmeta();
 

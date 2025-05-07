@@ -68,7 +68,5 @@ fn stack() -> Result<(), ()> {
             }
         }
     }
-    assert!(false);
-    Ok(())
-    
+    unreachable!();
 }

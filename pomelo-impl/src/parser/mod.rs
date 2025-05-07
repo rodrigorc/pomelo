@@ -212,7 +212,7 @@ fn action_cmp(
         .index
         .cmp(&the_symbols.get(b.look_ahead).index);
     match rc {
-        Ordering::Equal => ActionDetail::cmp(&the_states, &the_rules, &a.detail, &b.detail),
+        Ordering::Equal => ActionDetail::cmp(the_states, the_rules, &a.detail, &b.detail),
         rc => rc,
     }
 }
@@ -652,7 +652,7 @@ impl Pomelo {
         //  _n ::= T { None }
         //  _n ::= T(_A) { Some(_A) }
         //We consume the optional_tokens map, it is no longer needed
-        let optional_tokens = std::mem::replace(&mut self.optional_tokens, Default::default());
+        let optional_tokens = std::mem::take(&mut self.optional_tokens);
         for (sym_r, SymbolSpan(sym_l, span)) in optional_tokens {
             let dt = self
                 .the_symbols
@@ -880,7 +880,7 @@ impl Pomelo {
             for rp in rules {
                 self.the_rules.get_mut(rp).lhs_start = true;
 
-                let cfg = self.add_config(&mut basis, rp.clone(), 0);
+                let cfg = self.add_config(&mut basis, rp, 0);
                 self.the_configs.get_mut(cfg).fws.insert(0);
             }
         }
@@ -1105,7 +1105,7 @@ impl Pomelo {
         }
 
         /* Add the accepting token */
-        let sp = self.start.clone().unwrap();
+        let sp = self.start.unwrap();
 
         /* Add to the first state (which is always the starting state of the
          ** finite state machine) an action to ACCEPT if the lookahead is the
@@ -1134,7 +1134,7 @@ impl Pomelo {
                         /* The two actions "ap" and "nap" have the same lookahead.
                          ** Figure out which one should be used */
                         nconflict += if self
-                            .resolve_conflict(&mut *ap.borrow_mut(), &mut *nap.borrow_mut())
+                            .resolve_conflict(&mut ap.borrow_mut(), &mut nap.borrow_mut())
                         {
                             1
                         } else {
@@ -1552,7 +1552,7 @@ impl Pomelo {
                         return error_span(*span, "Nonterminal has no rules"); //tested
                     }
                     for newrp in rules {
-                        let newcfp = self.add_config(&mut cur, newrp.clone(), 0);
+                        let newcfp = self.add_config(&mut cur, newrp, 0);
                         let mut broken = false;
                         for SymbolAlias(xsp, ..) in &rhs[dot + 1..] {
                             let xsp = self.the_symbols.get(xsp);
@@ -2003,6 +2003,8 @@ impl Pomelo {
             #![allow(unused_variables)]
             #![allow(non_snake_case)]
             #![allow(unused_braces)]
+            #![allow(unused_mut)]
+            #![allow(clippy::let_unit_value)]
         });
 
         for code in &self.includes {
@@ -2801,11 +2803,12 @@ impl Pomelo {
         let error_yydt = Ident::new(&format!("YY{}", error_symbol.dt_num), Span::call_site());
         let ty_span = yysyntaxerror.span();
         src.extend(quote_spanned!{ty_span=>
-            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics, mut expected: ExpectedTokens #yy_generics) -> ::core::result::Result<#error_ty, #yyerrtype>
+            fn yy_syntax_error_2 #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics, expected: ExpectedTokens #yy_generics) -> ::core::result::Result<#error_ty, #yyerrtype>
                 #yy_generics_where
             {
                 let token = token_build(yymajor, yyminor);
                 let extra = &mut yy.extra;
+                let mut expected = expected;
                 #yysyntaxerror
             }
             fn yy_syntax_error #yy_generics_impl(yy: &mut Parser #yy_generics, yymajor: i32, yyminor: YYMinorType #yy_generics, expected: ExpectedTokens #yy_generics) -> ::core::result::Result<YYMinorType #yy_generics, #yyerrtype>
@@ -2831,7 +2834,7 @@ impl Pomelo {
         }
         yyrules.push(quote!(_ => unreachable!("no rule to apply")));
 
-        let accept_code = match types.get(&yyroottype) {
+        let accept_code = match types.get(yyroottype) {
             Some(n) => {
                 let yyroot = Ident::new(&format!("YY{}", n), Span::call_site());
                 quote!(

@@ -36,10 +36,7 @@ impl<T> Copy for VecRefId<T> {}
 
 impl<T> Clone for VecRefId<T> {
     fn clone(&self) -> Self {
-        VecRefId {
-            id: self.id,
-            _pd: std::marker::PhantomData,
-        }
+        *self
     }
 }
 impl<T> PartialEq for VecRefId<T> {
@@ -59,7 +56,7 @@ impl<T> std::hash::Hash for VecRefId<T> {
 impl<T> VecRefId<T> {
     pub fn dangling() -> VecRefId<T> {
         VecRefId {
-            id: std::usize::MAX,
+            id: usize::MAX,
             _pd: std::marker::PhantomData,
         }
     }

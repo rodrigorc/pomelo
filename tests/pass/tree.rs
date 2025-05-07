@@ -34,7 +34,8 @@ pomelo! {
                 };
                 p.parse(tok)?;
             }
-            Ok(p.end_of_input()?)
+            let res = p.end_of_input()?;
+            Ok(res)
         }
         pub fn parse_tree2(input: &str) -> Result<TestTree, String> {
             use proc_macro2;
@@ -49,7 +50,8 @@ pomelo! {
                 p.parse(tk)?;
                 Ok::<(), String>(())
             })?;
-            Ok(p.end_of_input()?)
+            let res = p.end_of_input()?;
+            Ok(res)
         }
     }
     %type input TestTree;

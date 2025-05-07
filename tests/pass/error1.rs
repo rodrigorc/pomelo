@@ -20,7 +20,7 @@ fn error() -> Result<(), ()> {
 
     let mut p = Parser::new(String::new());
 
-    for t in vec![
+    for t in [
         One, Two, Three, Eol,
         Two, Eol,
         One, Two, Three, Eol,

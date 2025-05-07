@@ -1,7 +1,7 @@
 use pomelo::*;
 
 pomelo! {
-    %syntax_error { return Err(()); }
+    %syntax_error { Err(()) }
     %type input i32;
     %type Two i32;
     input ::= One Two?(X) Three Two?(Y) Four end? { X.unwrap_or(1) + Y.unwrap_or(1) }

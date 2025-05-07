@@ -30,7 +30,7 @@ fn error() -> Result<(), String> {
     let mut p = Parser::new(String::new());
 
     let mut error = String::new();
-    for t in vec![
+    for t in [
         Letter('A'),
         Letter('B'),
         Letter('C'),
