@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+#[rustfmt::skip]
 #[derive(Debug)]
 pub enum BinOp {
     Plus, Minus,
@@ -12,7 +13,8 @@ pub enum BinOp {
 
 #[derive(Debug)]
 pub enum UnaOp {
-    Neg, Not
+    Neg,
+    Not,
 }
 
 #[derive(Debug)]
@@ -22,7 +24,7 @@ pub enum Expr {
     Variable(String),
     BinaryOp(BinOp, Box<(Expr, Expr)>),
     UnaryOp(UnaOp, Box<Expr>),
-    Call(String, Vec<Expr>)
+    Call(String, Vec<Expr>),
 }
 
 #[derive(Debug)]
@@ -57,17 +59,13 @@ pub struct Program {
 
 impl Function {
     pub fn new(name: String, args: Vec<String>, code: Vec<Stmt>) -> Function {
-        Function {
-            name, args, code
-        }
+        Function { name, args, code }
     }
 }
 
 impl Variable {
     pub fn new(name: String, ini: Expr) -> Variable {
-        Variable {
-            name, ini
-        }
+        Variable { name, ini }
     }
 }
 
@@ -85,4 +83,3 @@ impl Program {
         self.vars.push(v);
     }
 }
-

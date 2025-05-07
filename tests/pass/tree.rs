@@ -1,6 +1,6 @@
 use super::pm_lexer;
-use pomelo::*;
 use super::toy_lexer;
+use pomelo::*;
 
 pomelo! {
     %error String;
@@ -114,4 +114,3 @@ fn tree_unary_prec() -> Result<(), String> {
     compare_tree("2 +-1 * -+2", "+ 2 * < 1 < > 2")?;
     compare_tree("-(2 + 3)", "< + 2 3")
 }
-

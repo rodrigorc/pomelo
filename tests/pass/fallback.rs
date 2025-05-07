@@ -8,7 +8,6 @@ pomelo! {
     tokens ::= Three Two One;
 }
 
-
 #[test]
 fn fallback() -> Result<(), ()> {
     use parser::*;

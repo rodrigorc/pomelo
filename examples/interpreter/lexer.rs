@@ -1,4 +1,4 @@
-use std::io::{self, Read, BufRead, ErrorKind};
+use std::io::{self, BufRead, ErrorKind, Read};
 use std::str::FromStr;
 
 use super::parser;
@@ -14,7 +14,7 @@ pub enum CharKind {
 
 pub struct Lexer<R> {
     rdr: R,
-    current: Option<(CharKind, Vec<u8>)>
+    current: Option<(CharKind, Vec<u8>)>,
 }
 
 impl CharKind {
@@ -33,10 +33,7 @@ impl CharKind {
 
 impl<R: BufRead> Lexer<R> {
     pub fn new(rdr: R) -> Self {
-        Lexer {
-            rdr,
-            current: None,
-        }
+        Lexer { rdr, current: None }
     }
     fn next_priv(&mut self) -> io::Result<Option<(CharKind, Vec<u8>)>> {
         let mut reply = None;
@@ -53,9 +50,9 @@ impl<R: BufRead> Lexer<R> {
             self.current = match (self.current.take(), k2) {
                 (None, None) => None,
                 (None, Some(k2)) => Some((k2, vec![b])),
-                (Some((k1, mut bs)), t2)  => {
+                (Some((k1, mut bs)), t2) => {
                     //extend a Number or Alpha, but not a Punct
-                    if Some(k1) == t2  && k1 != CharKind::Punct {
+                    if Some(k1) == t2 && k1 != CharKind::Punct {
                         bs.push(b);
                         Some((k1, bs))
                     } else {
@@ -101,7 +98,9 @@ impl<R: BufRead> Lexer<R> {
                         CharKind::Comment => continue,
                         CharKind::Number => {
                             let s = String::from_utf8(s).map_err(|_| ErrorKind::InvalidInput)?;
-                            parser::Token::Number(i64::from_str(&s).map_err(|_| ErrorKind::InvalidInput)?)
+                            parser::Token::Number(
+                                i64::from_str(&s).map_err(|_| ErrorKind::InvalidInput)?,
+                            )
                         }
                         CharKind::Alpha => match &s[..] {
                             b"fn" => parser::Token::Fn,
@@ -116,10 +115,11 @@ impl<R: BufRead> Lexer<R> {
                             b"or" => parser::Token::Or,
                             b"not" => parser::Token::Not,
                             _ => {
-                                let s = String::from_utf8(s).map_err(|_| ErrorKind::InvalidInput)?;
+                                let s =
+                                    String::from_utf8(s).map_err(|_| ErrorKind::InvalidInput)?;
                                 parser::Token::Ident(s)
                             }
-                        }
+                        },
                         CharKind::String => {
                             let s = String::from_utf8(s).map_err(|_| ErrorKind::InvalidInput)?;
                             parser::Token::String(s)

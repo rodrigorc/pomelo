@@ -5,7 +5,6 @@
 use logos::Logos;
 use pomelo::pomelo;
 use std::collections::HashMap;
-use logos::Logos;
 
 #[derive(Debug, Clone)]
 pub enum JObject {
@@ -25,9 +24,12 @@ impl std::str::FromStr for JObject {
 
         while let Some(tk) = lex.next() {
             let tk = tk.map_err(|_| "lexer error")?;
-            p.parse(tk).map_err(|_| format!(r#"Parser error at: {:?} "{}""#, lex.span(), lex.slice()))?;
+            p.parse(tk)
+                .map_err(|_| format!(r#"Parser error at: {:?} "{}""#, lex.span(), lex.slice()))?;
         }
-        let j = p.end_of_input().map_err(|_| "Parser error: unexpected EOF")?;
+        let j = p
+            .end_of_input()
+            .map_err(|_| "Parser error: unexpected EOF")?;
         Ok(j)
     }
 }
@@ -101,8 +103,8 @@ fn main() {
     for arg in args {
         println!("arg: '{}'", arg);
         match arg.parse() {
-            Ok::<JObject,_>(j) => println!("JSON: '{:#?}'", j),
-            Err(e) => println!("Err: '{}'", e)
+            Ok::<JObject, _>(j) => println!("JSON: '{:#?}'", j),
+            Err(e) => println!("Err: '{}'", e),
         }
     }
 }

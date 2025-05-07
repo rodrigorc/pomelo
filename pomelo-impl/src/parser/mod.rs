@@ -1133,13 +1133,12 @@ impl Pomelo {
                     if ap.borrow().look_ahead == nap.borrow().look_ahead {
                         /* The two actions "ap" and "nap" have the same lookahead.
                          ** Figure out which one should be used */
-                        nconflict += if self
-                            .resolve_conflict(&mut ap.borrow_mut(), &mut nap.borrow_mut())
-                        {
-                            1
-                        } else {
-                            0
-                        };
+                        nconflict +=
+                            if self.resolve_conflict(&mut ap.borrow_mut(), &mut nap.borrow_mut()) {
+                                1
+                            } else {
+                                0
+                            };
                     } else {
                         break;
                     }
@@ -2645,7 +2644,7 @@ impl Pomelo {
                          ** This will be fed to %syntax_error to allow producing more human-readable
                          ** errors.
                          */
-                        let expected = ExpectedTokens { 
+                        let expected = ExpectedTokens {
                             stateno: yy.yystack.last().unwrap().stateno,
                             yy_major: 1,
                             _phantom: ::std::marker::PhantomData,

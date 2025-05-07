@@ -10,7 +10,7 @@ pub mod parser {
 
     /** The main parser class. It wraps a value of `ExtraArgument` type.*/
     pub struct Parser {
-        _x: ()
+        _x: (),
     }
     impl Parser {
         /** Creates a new `Parser` object. */
@@ -22,11 +22,10 @@ pub mod parser {
             unreachable!()
         }
         /** Adds the special `end_of_input` token to the input and then consumes the parser.
-         If it succeeds, it returns `Ok(input)`, being `input` the associated value to
-         the start symbol (or `()` if none). */
+        If it succeeds, it returns `Ok(input)`, being `input` the associated value to
+        the start symbol (or `()` if none). */
         pub fn end_of_input(self) -> Result<Input, Error> {
             unreachable!()
         }
     }
 }
-

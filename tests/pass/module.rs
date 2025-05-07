@@ -7,5 +7,5 @@ pomelo! {
 
 #[test]
 fn test() {
-    let _ : orange::Token;
+    let _: orange::Token;
 }

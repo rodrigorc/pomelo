@@ -14,6 +14,7 @@ pomelo! {
     line ::= One Two Three { extra.push('1'); }
 }
 
+#[rustfmt::skip]
 #[test]
 fn typed_error() -> Result<(), ()> {
     use parser::*;

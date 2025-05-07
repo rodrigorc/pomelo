@@ -30,12 +30,7 @@ fn error() -> Result<(), String> {
     let mut p = Parser::new(String::new());
 
     let mut error = String::new();
-    for t in [
-        Letter('A'),
-        Letter('B'),
-        Letter('C'),
-        Letter('D'),
-    ] {
+    for t in [Letter('A'), Letter('B'), Letter('C'), Letter('D')] {
         match p.parse(t) {
             Ok(_) => {}
             Err(e) => {

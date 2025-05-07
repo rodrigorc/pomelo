@@ -11,27 +11,25 @@ pub fn tokenize(input: &str) -> Vec<TestToken> {
     let mut prev = None;
     for c in input.chars() {
         let next = match c {
-            'a'..='z' | 'A'..='Z' => {
-                Some(Alpha(c.to_string()))
-            }
-            '0'..='9' => {
-                Some(Number(c as i32 - '0' as i32))
-            }
-            ' ' | '\r' | '\n' | '\t' => {
-                None
-            }
-            c => {
-                Some(Punct(c))
-            }
+            'a'..='z' | 'A'..='Z' => Some(Alpha(c.to_string())),
+            '0'..='9' => Some(Number(c as i32 - '0' as i32)),
+            ' ' | '\r' | '\n' | '\t' => None,
+            c => Some(Punct(c)),
         };
         prev = match (prev, next) {
             (None, b) => b,
-            (Some(a), None) => { res.push(a); None }
+            (Some(a), None) => {
+                res.push(a);
+                None
+            }
             (Some(a), Some(b)) => Some(match (a, b) {
                 (Alpha(a), Alpha(b)) => Alpha(a + &b),
-                (Number(a), Number(b)) => Number(10*a + b),
-                (a, b) => { res.push(a); b }
-            })
+                (Number(a), Number(b)) => Number(10 * a + b),
+                (a, b) => {
+                    res.push(a);
+                    b
+                }
+            }),
         }
     }
     if let Some(a) = prev.take() {

@@ -1,5 +1,5 @@
-use std::io::{self, BufReader, ErrorKind};
 use std::fs::File;
+use std::io::{self, BufReader, ErrorKind};
 
 mod lexer;
 use lexer::Lexer;
@@ -7,7 +7,6 @@ use lexer::Lexer;
 mod parser;
 
 mod ast;
-
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

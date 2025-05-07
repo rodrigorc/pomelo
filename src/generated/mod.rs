@@ -8,10 +8,10 @@
 
 #![allow(unused_variables)]
 
-/** Generated module when `%extra_argument` is *not* used. */
-mod without_extra_argument;
 /** Generated module when `%extra_argument` is used. */
 mod with_extra_argument;
+/** Generated module when `%extra_argument` is *not* used. */
+mod without_extra_argument;
 
 #[doc(inline)]
 pub use without_extra_argument::parser as parser_without_extra_argument;

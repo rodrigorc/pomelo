@@ -50,6 +50,7 @@ fn extra_token() -> Result<(), ()> {
     parse.parse(Token::Three((3, ('c', 'd'))))?;
     parse.parse(Token::Three((3, ('e', 'f'))))?;
     let res = parse.end_of_input()?;
+    #[rustfmt::skip]
     assert_eq!(res, vec![
         (1, "one"), (1, "/"),
         (2, "21, 42"), (2, "/"),

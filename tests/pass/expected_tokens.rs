@@ -39,6 +39,7 @@ pomelo! {
     line ::= Three { }
 }
 
+#[rustfmt::skip]
 #[test]
 fn expected_tokens() -> Result<(), ()> {
     let mut p = parser::Parser::new(String::new());
