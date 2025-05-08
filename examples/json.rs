@@ -5,7 +5,6 @@
 use logos::Logos;
 use pomelo::pomelo;
 use std::collections::HashMap;
-
 #[derive(Debug, Clone)]
 pub enum JObject {
     JDict(HashMap<String, JObject>),
@@ -24,8 +23,14 @@ impl std::str::FromStr for JObject {
 
         while let Some(tk) = lex.next() {
             let tk = tk.map_err(|_| "lexer error")?;
-            p.parse(tk)
-                .map_err(|_| format!(r#"Parser error at: {:?} "{}""#, lex.span(), lex.slice()))?;
+            p.parse(tk).map_err(|exps| {
+                let mut s = format!("Parser error at: {:?} \"{}\"", lex.span(), lex.slice());
+                if !exps.is_empty() {
+                    let exps = exps.join(", ");
+                    s = format!("{}\n\tExpected tokens: {}", s, exps);
+                }
+                s
+            })?;
         }
         let j = p
             .end_of_input()
@@ -49,6 +54,11 @@ pomelo! {
             let s = lex.slice();
             String::from(&s[1 .. s.len() - 1])
         }
+    }
+    %error Vec<String>;
+    %syntax_error {
+        let exps: Vec<String> = expected.map(|exp| exp.name.to_string()).collect();
+        Err(exps)
     }
     %token
         #[derive(Debug, Logos)]
@@ -104,7 +114,7 @@ fn main() {
         println!("arg: '{}'", arg);
         match arg.parse() {
             Ok::<JObject, _>(j) => println!("JSON: '{:#?}'", j),
-            Err(e) => println!("Err: '{}'", e),
+            Err(e) => println!("Err: {}", e),
         }
     }
 }
