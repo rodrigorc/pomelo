@@ -1,7 +1,7 @@
 [package]
 name = "pomelo"
-version = "0.2.0"
-edition = "2018"
+version = "0.2.1"
+edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
 description = "Implementation of the Lemon parser generator as a Rust procedural macro"
@@ -22,7 +22,7 @@ doc_generated = []
 members = ["pomelo-impl"]
 
 [dependencies]
-pomelo-impl = { version = "=0.2.0", path="pomelo-impl"}
+pomelo-impl = { version = "=0.2.1", path="pomelo-impl"}
 
 [dev-dependencies]
 quote = "1.0"
