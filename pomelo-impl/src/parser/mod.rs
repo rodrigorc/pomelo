@@ -1800,20 +1800,49 @@ impl Pomelo {
                 self.start = Some(self.symbol_new_t(&id, NewSymbolType::NonTerminal));
             }
             Decl::Fallback(fb, ids) => {
-                if !is_terminal_ident(&fb) {
-                    return error_span(fb.span(), "Fallback must be a token"); //tested
-                }
-                let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
-                let mut has_fallback = self.has_fallback;
+                let mut syms = Vec::with_capacity(ids.len());
                 for id in ids {
                     if !is_terminal_ident(&id) {
                         return error_span(id.span(), "Fallback ids must be tokens");
                         //tested
                     }
                     let sp = self.symbol_new_t(&id, NewSymbolType::Terminal);
+                    syms.push((id.span(), sp));
+                }
+
+                if !is_terminal_ident(&fb) {
+                    return error_span(fb.span(), "Fallback must be a token"); //tested
+                }
+
+                let fallback = self.symbol_new_t(&fb, NewSymbolType::Terminal);
+
+                // Check that the new fallbacks do not create a fallback-loop.
+                // That would cause a stack overflow in runtime.
+                {
+                    let mut fallback = fallback;
+                    loop {
+                        let fb_b = self.the_symbols.get(fallback);
+                        match fb_b.fallback {
+                            None => break,
+                            Some(fb_next) => {
+                                if syms.iter().any(|(_, s)| *s == fb_next) {
+                                    return error_span(
+                                        fb.span(),
+                                        "Fallback directive creates a loop",
+                                    );
+                                    //tested
+                                }
+                                fallback = fb_next;
+                            }
+                        }
+                    }
+                }
+
+                let mut has_fallback = self.has_fallback;
+                for (span, sp) in syms {
                     let mut b = self.the_symbols.get_mut(sp);
                     if b.fallback.is_some() {
-                        return error_span(id.span(), "More than one fallback assigned to token");
+                        return error_span(span, "More than one fallback assigned to token");
                         //tested
                     }
                     b.fallback = Some(fallback);
