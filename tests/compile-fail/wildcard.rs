@@ -1,3 +1,4 @@
+extern crate core;
 extern crate pomelo;
 use pomelo::*;
 

@@ -9,6 +9,7 @@ fn compile_test() {
         ..Default::default()
     };
     config.link_deps();
+    //config.clean_rlib();
     //config.clean_rmeta();
 
     compiletest_rs::run_tests(&config);
