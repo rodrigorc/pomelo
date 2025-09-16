@@ -24,8 +24,8 @@ pomelo! {
 
 #[test]
 fn error() -> Result<(), String> {
-    use parser::*;
     use Token::*;
+    use parser::*;
 
     let mut p = Parser::new(String::new());
 

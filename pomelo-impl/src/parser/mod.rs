@@ -9,8 +9,8 @@ use crate::decl::*;
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::ToTokens;
 use syn::{
-    spanned::Spanned, Attribute, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type,
-    Variant,
+    Attribute, Block, Fields, Ident, Item, ItemEnum, ItemStruct, Pat, Type, Variant,
+    spanned::Spanned,
 };
 
 mod vecref;
@@ -1762,7 +1762,7 @@ impl Pomelo {
                             return error_span(
                                 token.span(),
                                 "Symbol has already been given a precedence",
-                            )
+                            );
                         } //tested
                         None => b.precedence = Some(Precedence(pdt.precedence, a)),
                     }
