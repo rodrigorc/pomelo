@@ -18,10 +18,10 @@ impl<T> VecRef<T> {
             _pd: std::marker::PhantomData,
         }
     }
-    pub fn get(&self, id: impl Borrow<VecRefId<T>>) -> Ref<T> {
+    pub fn get(&self, id: impl Borrow<VecRefId<T>>) -> Ref<'_, T> {
         self.data[id.borrow().id].borrow()
     }
-    pub fn get_mut(&self, id: impl Borrow<VecRefId<T>>) -> RefMut<T> {
+    pub fn get_mut(&self, id: impl Borrow<VecRefId<T>>) -> RefMut<'_, T> {
         self.data[id.borrow().id].borrow_mut()
     }
 }
