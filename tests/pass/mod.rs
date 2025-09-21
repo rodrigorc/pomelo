@@ -7,6 +7,7 @@ mod error4;
 mod expected_tokens;
 mod extra_token;
 mod fallback;
+mod fallback2;
 mod generics;
 mod module;
 mod optional;
