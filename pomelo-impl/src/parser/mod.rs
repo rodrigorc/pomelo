@@ -1225,6 +1225,8 @@ impl Pomelo {
      ** In this version, we take the most frequent REDUCE action and make
      ** it the default.  Except, there is no default if the wildcard token
      ** is a possible look-ahead.
+     **
+     ** Returns true if it changes anything
      */
     fn compress_tables(&mut self) {
         use ActionDetail::*;
@@ -1237,8 +1239,54 @@ impl Pomelo {
                 let mut rbest = None;
                 let mut uses_wildcard = false;
                 let stp = self.the_states.get(stp);
+
+                // ignored_actions will be actions that do not participate in the compression.
+                // If the lookahead of an action has fallbacks that are lookaheads of another rule,
+                // then this rule can only be compressed if they both have the same ActionDetail,
+                // that is, they do the same thing.
+                // It uses look_ahead as the action identifier.
+                let mut ignored_actions = BTreeSet::new();
+                if self.has_fallback {
+                    for ap in &stp.actions {
+                        let ap = ap.borrow();
+                        // Iterate the fallback chain
+                        let mut sym = ap.look_ahead;
+                        while let Some(fb) = self.the_symbols.get(sym).fallback {
+                            sym = fb;
+
+                            // Is the fallback used in this state? Does it have the same detail?
+                            let fallback_with_same_action = stp.actions.iter().find_map(|ap2| {
+                                let ap2 = ap2.borrow();
+                                if fb == ap2.look_ahead {
+                                    Some(
+                                        ActionDetail::cmp(
+                                            &self.the_states,
+                                            &self.the_rules,
+                                            &ap.detail,
+                                            &ap2.detail,
+                                        )
+                                        .is_eq(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            });
+
+                            // It is used, but it has different detail, do not compress this
+                            // action.
+                            if fallback_with_same_action == Some(false) {
+                                ignored_actions.insert(ap.look_ahead);
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 for (iap, ap) in stp.actions.iter().enumerate() {
                     let ap = ap.borrow();
+                    if ignored_actions.contains(&ap.look_ahead) {
+                        continue;
+                    }
                     match (&ap.detail, &self.wildcard) {
                         (Shift(_), Some(w)) => {
                             if ap.look_ahead == *w {
@@ -1255,6 +1303,9 @@ impl Pomelo {
                             let mut n = 1;
                             for ap2 in &stp.actions[iap + 1..] {
                                 let ap2 = ap2.borrow();
+                                if ignored_actions.contains(&ap2.look_ahead) {
+                                    continue;
+                                }
                                 match &ap2.detail {
                                     Reduce(rp2) => {
                                         if rbest.as_ref() == Some(rp2) {
@@ -1290,6 +1341,9 @@ impl Pomelo {
                 let mut apbest = None;
                 for (iap, ap) in stp.actions.iter().enumerate() {
                     let bap = ap.borrow();
+                    if ignored_actions.contains(&bap.look_ahead) {
+                        continue;
+                    }
                     if let Reduce(rp) = &bap.detail {
                         if *rp == rbest {
                             apbest = Some((iap, ap));
@@ -1301,6 +1355,9 @@ impl Pomelo {
                     ap.borrow_mut().look_ahead = def_symbol;
                     for ap2 in &stp.actions[iap + 1..] {
                         let mut ap2 = ap2.borrow_mut();
+                        if ignored_actions.contains(&ap2.look_ahead) {
+                            continue;
+                        }
                         let unuse = match &ap2.detail {
                             Reduce(rp) => *rp == rbest,
                             _ => false,
