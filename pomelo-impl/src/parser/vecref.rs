@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::cell::{Ref, RefCell, RefMut};
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
 pub struct VecRef<T> {
@@ -46,6 +47,18 @@ impl<T> PartialEq for VecRefId<T> {
 }
 
 impl<T> Eq for VecRefId<T> {}
+
+impl<T> PartialOrd for VecRefId<T> {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.id.cmp(&o.id))
+    }
+}
+
+impl<T> Ord for VecRefId<T> {
+    fn cmp(&self, o: &Self) -> Ordering {
+        self.id.cmp(&o.id)
+    }
+}
 
 impl<T> std::hash::Hash for VecRefId<T> {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
