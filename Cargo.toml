@@ -1,6 +1,6 @@
 [package]
 name = "pomelo"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Rodrigo Rivas Costa <rodrigorivascosta@gmail.com>"]
@@ -22,7 +22,7 @@ doc_generated = []
 members = ["pomelo-impl"]
 
 [dependencies]
-pomelo-impl = { version = "=0.2.2", path="pomelo-impl"}
+pomelo-impl = { version = "=0.2.3", path="pomelo-impl"}
 
 [dev-dependencies]
 quote = "1.0"
